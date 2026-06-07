@@ -1,9 +1,9 @@
 import { Typography } from '@mui/material';
 
-export default function EmployeePage() {
+export default function StaffingCheckPage() {
   return (
     <Typography variant="h4" component="h2">
-      員工管理
+      少編/超編檢查
     </Typography>
   );
 }

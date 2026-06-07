@@ -1,9 +1,9 @@
 import { Typography } from '@mui/material';
 
-export default function EmployeePage() {
+export default function AvailabilityPage() {
   return (
     <Typography variant="h4" component="h2">
-      員工管理
+      可上班時間
     </Typography>
   );
 }

@@ -83,6 +83,7 @@ export default function AvailabilityPage() {
   const [editingAvailability, setEditingAvailability] = useState<Availability | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Availability | null>(null);
   const [formValues, setFormValues] = useState<AvailabilityFormValues>(emptyFormValues);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
 
   const employeeNameById = useMemo(() => {
     return new Map(employees.map((employee) => [employee.id, employee.name]));
@@ -94,7 +95,9 @@ export default function AvailabilityPage() {
 
     try {
       const [availabilityData, employeeData] = await Promise.all([
-        availabilityService.getAvailability(),
+        selectedEmployeeId
+          ? availabilityService.getAvailabilityByEmployee(Number(selectedEmployeeId))
+          : availabilityService.getAvailability(),
         employeeService.getEmployees(),
       ]);
       setAvailability(availabilityData);
@@ -104,7 +107,7 @@ export default function AvailabilityPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedEmployeeId]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -118,7 +121,10 @@ export default function AvailabilityPage() {
 
   const handleOpenCreate = () => {
     setEditingAvailability(null);
-    setFormValues(emptyFormValues);
+    setFormValues({
+      ...emptyFormValues,
+      employeeId: selectedEmployeeId,
+    });
     setFormOpen(true);
   };
 
@@ -250,6 +256,40 @@ export default function AvailabilityPage() {
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={2}
+          sx={{
+            alignItems: { xs: 'stretch', md: 'center' },
+            justifyContent: 'space-between',
+          }}
+        >
+          <FormControl sx={{ minWidth: { xs: '100%', md: 320 } }}>
+            <InputLabel id="employee-filter-select-label">Employee Filter</InputLabel>
+            <Select
+              labelId="employee-filter-select-label"
+              label="Employee Filter"
+              value={selectedEmployeeId}
+              onChange={(event) => setSelectedEmployeeId(event.target.value)}
+            >
+              <MenuItem value="">All Employees</MenuItem>
+              {employees.map((employee) => (
+                <MenuItem key={employee.id} value={String(employee.id)}>
+                  {employee.id} - {employee.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          <Typography color="text.secondary">
+            {selectedEmployeeId
+              ? `Showing employee ID ${selectedEmployeeId}`
+              : 'Showing all employees'}
+          </Typography>
+        </Stack>
+      </Paper>
+
       <TableContainer component={Paper} variant="outlined">
         <Table>
           <TableHead>
@@ -336,7 +376,7 @@ export default function AvailabilityPage() {
                 >
                   {employees.map((employee) => (
                     <MenuItem key={employee.id} value={String(employee.id)}>
-                      {employee.name}
+                      {employee.id} - {employee.name}
                     </MenuItem>
                   ))}
                 </Select>

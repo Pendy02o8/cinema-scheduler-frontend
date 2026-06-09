@@ -5,6 +5,7 @@ import EventAvailableIcon from '@mui/icons-material/EventAvailable';
 import PeopleAltIcon from '@mui/icons-material/PeopleAlt';
 import QueryStatsIcon from '@mui/icons-material/QueryStats';
 import RuleIcon from '@mui/icons-material/Rule';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import {
   Divider,
   Drawer,
@@ -27,12 +28,13 @@ type SidebarItem = {
 };
 
 const sidebarItems: SidebarItem[] = [
-  { label: '員工管理', path: '/employees', icon: PeopleAltIcon },
-  { label: '可上班時間', path: '/availability', icon: EventAvailableIcon },
-  { label: '職位管理', path: '/positions', icon: BadgeIcon },
-  { label: '班表管理', path: '/schedules', icon: CalendarMonthIcon },
-  { label: '工時統計', path: '/labor-stats', icon: QueryStatsIcon },
-  { label: '少編/超編檢查', path: '/staffing-check', icon: RuleIcon },
+  { label: 'Employee Management', path: '/employees', icon: PeopleAltIcon },
+  { label: 'Availability Management', path: '/availability', icon: EventAvailableIcon },
+  { label: 'Position Management', path: '/positions', icon: BadgeIcon },
+  { label: 'Weekly Schedule Management', path: '/weekly-schedules', icon: CalendarMonthIcon },
+  { label: 'Work Hour Statistics', path: '/work-hour-statistics', icon: QueryStatsIcon },
+  { label: 'Understaffing Check', path: '/understaffing-check', icon: RuleIcon },
+  { label: 'Overstaffing Check', path: '/overstaffing-check', icon: WarningAmberIcon },
 ];
 
 export default function Sidebar() {
@@ -53,7 +55,7 @@ export default function Sidebar() {
     >
       <Toolbar sx={{ px: 3 }}>
         <Typography variant="h6" noWrap>
-          影院排班
+          Cinema Scheduler
         </Typography>
       </Toolbar>
       <Divider />

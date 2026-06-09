@@ -1,9 +1,9 @@
 import { Typography } from '@mui/material';
 
-export default function PositionPage() {
+export default function OverstaffingCheckPage() {
   return (
     <Typography variant="h4" component="h2">
-      Position Management
+      Overstaffing Check
     </Typography>
   );
 }

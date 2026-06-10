@@ -1,6 +1,7 @@
 import type { SvgIconComponent } from '@mui/icons-material';
 import BadgeIcon from '@mui/icons-material/Badge';
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
+import EventBusyIcon from '@mui/icons-material/EventBusy';
 import EventAvailableIcon from '@mui/icons-material/EventAvailable';
 import PeopleAltIcon from '@mui/icons-material/PeopleAlt';
 import QueryStatsIcon from '@mui/icons-material/QueryStats';
@@ -32,6 +33,7 @@ const sidebarItems: SidebarItem[] = [
   { label: 'Availability Management', path: '/availability', icon: EventAvailableIcon },
   { label: 'Position Management', path: '/positions', icon: BadgeIcon },
   { label: 'Weekly Schedule Management', path: '/weekly-schedules', icon: CalendarMonthIcon },
+  { label: 'Monthly Leave Management', path: '/monthly-leaves', icon: EventBusyIcon },
   { label: 'Work Hour Statistics', path: '/work-hour-statistics', icon: QueryStatsIcon },
   { label: 'Understaffing Check', path: '/understaffing-check', icon: RuleIcon },
   { label: 'Overstaffing Check', path: '/overstaffing-check', icon: WarningAmberIcon },

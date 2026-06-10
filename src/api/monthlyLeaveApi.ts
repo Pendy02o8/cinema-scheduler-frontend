@@ -28,6 +28,15 @@ export const monthlyLeaveApi = {
     return response.data;
   },
 
+  async createForEmployee(employeeId: number, leaveDate: string) {
+    const response = await httpClient.post<MonthlyLeave>(monthlyLeavePath, {
+      employee: { id: employeeId },
+      leaveDate,
+      note: '月休',
+    });
+    return response.data;
+  },
+
   async remove(id: number) {
     await httpClient.delete(`${monthlyLeavePath}/${id}`);
   },

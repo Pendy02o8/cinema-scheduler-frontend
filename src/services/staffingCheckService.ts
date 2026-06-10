@@ -62,7 +62,7 @@ function parseResultsForDate(rawResults: string[], date: string) {
 export const staffingCheckService = {
   async getUnderstaffingByDate(date: string) {
     const results = await staffingCheckApi.getUnderstaffingByDate(date);
-    return parseResults(results);
+    return parseResultsForDate(results, date);
   },
 
   async getUnderstaffingByWeek(query: StaffingWeekCheckQuery) {

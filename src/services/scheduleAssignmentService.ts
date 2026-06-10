@@ -10,6 +10,10 @@ export const scheduleAssignmentService = {
     return scheduleAssignmentApi.create(payload);
   },
 
+  validateScheduleAssignment(payload: ScheduleAssignmentPayload) {
+    return scheduleAssignmentApi.validate(payload);
+  },
+
   updateScheduleAssignment(id: number, payload: ScheduleAssignmentPayload) {
     return scheduleAssignmentApi.update(id, payload);
   },

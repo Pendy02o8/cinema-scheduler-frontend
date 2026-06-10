@@ -24,3 +24,7 @@ export type ScheduleAssignmentPayload = {
   endTime: string;
   note?: string;
 };
+
+export type ScheduleAssignmentValidationResult = {
+  warnings: string[];
+};

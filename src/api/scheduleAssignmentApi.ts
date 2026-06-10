@@ -2,6 +2,7 @@ import httpClient from './httpClient';
 import type {
   ScheduleAssignment,
   ScheduleAssignmentPayload,
+  ScheduleAssignmentValidationResult,
 } from '../types/scheduleAssignment';
 
 const scheduleAssignmentPath = '/schedule-assignments';
@@ -14,6 +15,14 @@ export const scheduleAssignmentApi = {
 
   async create(payload: ScheduleAssignmentPayload) {
     const response = await httpClient.post<ScheduleAssignment>(scheduleAssignmentPath, payload);
+    return response.data;
+  },
+
+  async validate(payload: ScheduleAssignmentPayload) {
+    const response = await httpClient.post<ScheduleAssignmentValidationResult>(
+      `${scheduleAssignmentPath}/validate`,
+      payload,
+    );
     return response.data;
   },
 

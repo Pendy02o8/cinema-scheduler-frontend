@@ -41,6 +41,7 @@ import { positionService } from '../services/positionService';
 import { scheduleAssignmentService } from '../services/scheduleAssignmentService';
 import { staffingCheckService } from '../services/staffingCheckService';
 import { weeklyScheduleService } from '../services/weeklyScheduleService';
+import type { Availability } from '../types/availability';
 import type { Employee } from '../types/employee';
 import type { Position } from '../types/position';
 import type { MonthlyLeave } from '../types/monthlyLeave';
@@ -48,6 +49,7 @@ import type {
   ScheduleAssignment,
   ScheduleAssignmentPayload,
 } from '../types/scheduleAssignment';
+import type { StaffingCheckResult } from '../types/staffingCheck';
 import type {
   WeeklySchedule,
   WeeklySchedulePayload,
@@ -114,6 +116,8 @@ const scheduleHourOptions = Array.from({ length: 24 }, (_, hour) =>
 );
 const shortageHeaderColor = '#ffd6e0';
 const overstaffingAssignmentColor = '#fff3cd';
+const restCellColor = '#ffd966';
+const restTextColor = '#d32f2f';
 const scheduleStickyColumnWidth = 96;
 const scheduleDateColumnMinWidth = 104;
 const jobTitleOrder: Record<string, number> = {
@@ -166,6 +170,10 @@ function getErrorMessage(error: unknown) {
   return 'An unexpected error occurred.';
 }
 
+function getSuccessMessage(response: unknown, fallbackMessage: string) {
+  return typeof response === 'string' && response.trim() ? response : fallbackMessage;
+}
+
 function getStatusColor(status: string) {
   if (status === 'DRAFT') {
     return 'warning';
@@ -190,23 +198,41 @@ function formatCompactTime(time?: string | null) {
   return formatTime(time).replace(':', '');
 }
 
+function formatAvailabilityPreview(availability: Availability) {
+  const boundaryTime = formatCompactTime(availability.boundaryTime);
+  const availabilityType = availability.availabilityType.toUpperCase();
+
+  if (availabilityType === 'ALL_DAY') {
+    return '整天可';
+  }
+
+  if (availabilityType === 'UNAVAILABLE' || availabilityType === 'OFF') {
+    return '休';
+  }
+
+  if (availabilityType === 'BEFORE' && boundaryTime !== '-') {
+    return `${boundaryTime}前`;
+  }
+
+  if (availabilityType === 'AFTER' && boundaryTime !== '-') {
+    return `${boundaryTime}後`;
+  }
+
+  return availability.note || availability.availabilityType;
+}
+
+function isRestAvailability(availability: Availability) {
+  const availabilityType = availability.availabilityType.toUpperCase();
+
+  return availabilityType === 'UNAVAILABLE' || availabilityType === 'OFF';
+}
+
 function isNoPositionRequiredJobTitle(jobTitle?: string | null) {
   return Boolean(jobTitle && noPositionRequiredJobTitles.includes(jobTitle));
 }
 
 function getAssignmentPositionName(assignment: ScheduleAssignment) {
   return assignment.position?.name ?? '';
-}
-
-function formatBoardAssignmentText(
-  assignment: ScheduleAssignment,
-  positionName: string,
-) {
-  const timeText = `${formatCompactTime(assignment.startTime)}-${formatCompactTime(
-    assignment.endTime,
-  )}`;
-
-  return positionName ? `${timeText}  ${positionName}` : timeText;
 }
 
 function getTimeHour(time: string) {
@@ -248,6 +274,10 @@ function parseStaffingPeriod(period: string) {
     startTime: match[1],
     endTime: match[2],
   };
+}
+
+function isActualUnderstaffingResult(result: { period: string }) {
+  return Boolean(parseStaffingPeriod(result.period));
 }
 
 function hasTimeOverlap(
@@ -414,6 +444,7 @@ export default function SchedulePage() {
   const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [assignments, setAssignments] = useState<ScheduleAssignment[]>([]);
   const [monthlyLeaves, setMonthlyLeaves] = useState<MonthlyLeave[]>([]);
+  const [availabilityPreview, setAvailabilityPreview] = useState<Availability[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
@@ -424,9 +455,13 @@ export default function SchedulePage() {
   const [error, setError] = useState<string | null>(null);
   const [staffingCheckError, setStaffingCheckError] = useState<string | null>(null);
   const [shortageDateSet, setShortageDateSet] = useState<Set<string>>(() => new Set());
+  const [understaffingResults, setUnderstaffingResults] = useState<StaffingCheckResult[]>([]);
   const [overstaffingRanges, setOverstaffingRanges] = useState<OverstaffingRange[]>([]);
   const [scheduleFormOpen, setScheduleFormOpen] = useState(false);
   const [assignmentFormOpen, setAssignmentFormOpen] = useState(false);
+  const [assignmentWarnings, setAssignmentWarnings] = useState<string[]>([]);
+  const [pendingAssignmentPayload, setPendingAssignmentPayload] =
+    useState<ScheduleAssignmentPayload | null>(null);
   const [editingSchedule, setEditingSchedule] = useState<WeeklySchedule | null>(null);
   const [editingAssignment, setEditingAssignment] = useState<ScheduleAssignment | null>(null);
   const [cellActionTarget, setCellActionTarget] = useState<CellActionTarget | null>(null);
@@ -450,10 +485,6 @@ export default function SchedulePage() {
   const [assignmentFormValues, setAssignmentFormValues] = useState<AssignmentFormValues>(
     emptyAssignmentFormValues,
   );
-
-  const employeeNameById = useMemo(() => {
-    return new Map(employees.map((employee) => [employee.id, employee.name]));
-  }, [employees]);
 
   const positionNameById = useMemo(() => {
     return new Map(positions.map((position) => [position.id, position.name]));
@@ -555,6 +586,35 @@ export default function SchedulePage() {
     return grid;
   }, [monthlyLeaves]);
 
+  const availabilityPreviewGrid = useMemo(() => {
+    const grid = new Map<string, Availability[]>();
+
+    availabilityPreview.forEach((availability) => {
+      const key = `${availability.employee.id}-${availability.date}`;
+      const currentAvailability = grid.get(key) ?? [];
+      currentAvailability.push(availability);
+      grid.set(key, currentAvailability);
+    });
+
+    return grid;
+  }, [availabilityPreview]);
+
+  const understaffingByDate = useMemo(() => {
+    const grid = new Map<string, StaffingCheckResult[]>();
+
+    understaffingResults.forEach((result) => {
+      if (!result.date) {
+        return;
+      }
+
+      const currentResults = grid.get(result.date) ?? [];
+      currentResults.push(result);
+      grid.set(result.date, currentResults);
+    });
+
+    return grid;
+  }, [understaffingResults]);
+
   const loadPageData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -606,9 +666,33 @@ export default function SchedulePage() {
     }
   }, []);
 
+  const loadAvailabilityPreviewForSchedule = useCallback(async (schedule: WeeklySchedule | null) => {
+    if (!schedule) {
+      setAvailabilityPreview([]);
+      return;
+    }
+
+    try {
+      const availabilityData = await availabilityService.getAvailability();
+      setAvailabilityPreview(
+        availabilityData.filter((availability) => {
+          if (availability.weeklySchedule?.id === schedule.id) {
+            return true;
+          }
+
+          return availability.date >= schedule.weekStartDate && availability.date <= schedule.weekEndDate;
+        }),
+      );
+    } catch (loadError) {
+      setAvailabilityPreview([]);
+      setStaffingCheckError(getErrorMessage(loadError));
+    }
+  }, []);
+
   const fetchStaffingCheckResults = useCallback(async (schedule: WeeklySchedule | null) => {
     if (!schedule) {
       setShortageDateSet(new Set());
+      setUnderstaffingResults([]);
       setOverstaffingRanges([]);
       setStaffingCheckError(null);
       return;
@@ -619,18 +703,24 @@ export default function SchedulePage() {
         startDate: schedule.weekStartDate,
         endDate: schedule.weekEndDate,
       };
-      const [understaffingResults, overstaffingResults] = await Promise.all([
-        staffingCheckService.getUnderstaffingByWeek(query),
+      const scheduleDatesForCheck = getDatesBetween(schedule.weekStartDate, schedule.weekEndDate);
+      const [dailyUnderstaffingResults, overstaffingResults] = await Promise.all([
+        Promise.all(
+          scheduleDatesForCheck.map((date) => staffingCheckService.getUnderstaffingByDate(date)),
+        ),
         staffingCheckService.getOverstaffingByWeek(query),
       ]);
+      const understaffingResults = dailyUnderstaffingResults.flat();
+      const actualUnderstaffingResults = understaffingResults.filter(isActualUnderstaffingResult);
 
       setShortageDateSet(
         new Set(
-          understaffingResults
+          actualUnderstaffingResults
             .map((result) => result.date)
             .filter((date): date is string => Boolean(date)),
         ),
       );
+      setUnderstaffingResults(actualUnderstaffingResults);
       setOverstaffingRanges(
         overstaffingResults.flatMap((result) => {
           const period = parseStaffingPeriod(result.period);
@@ -652,6 +742,7 @@ export default function SchedulePage() {
       setStaffingCheckError(null);
     } catch (checkError) {
       setShortageDateSet(new Set());
+      setUnderstaffingResults([]);
       setOverstaffingRanges([]);
       setStaffingCheckError(getErrorMessage(checkError));
     }
@@ -671,12 +762,19 @@ export default function SchedulePage() {
     const timeoutId = window.setTimeout(() => {
       void fetchStaffingCheckResults(selectedSchedule);
       void loadMonthlyLeavesForSchedule(selectedSchedule);
+      void loadAvailabilityPreviewForSchedule(selectedSchedule);
     }, 0);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [assignments, fetchStaffingCheckResults, loadMonthlyLeavesForSchedule, selectedSchedule]);
+  }, [
+    assignments,
+    fetchStaffingCheckResults,
+    loadAvailabilityPreviewForSchedule,
+    loadMonthlyLeavesForSchedule,
+    selectedSchedule,
+  ]);
 
   const handleOpenCreateSchedule = () => {
     setEditingSchedule(null);
@@ -696,6 +794,8 @@ export default function SchedulePage() {
 
   const handleOpenCreateAssignment = () => {
     setEditingAssignment(null);
+    setAssignmentWarnings([]);
+    setPendingAssignmentPayload(null);
     setAssignmentFormValues({
       ...emptyAssignmentFormValues,
       weeklyScheduleId: selectedScheduleId,
@@ -706,6 +806,8 @@ export default function SchedulePage() {
 
   const handleOpenCreateAssignmentForCell = (employee: Employee, date: string) => {
     setEditingAssignment(null);
+    setAssignmentWarnings([]);
+    setPendingAssignmentPayload(null);
     setAssignmentFormValues({
       ...emptyAssignmentFormValues,
       weeklyScheduleId: selectedScheduleId,
@@ -743,6 +845,8 @@ export default function SchedulePage() {
 
   const handleOpenEditAssignment = (assignment: ScheduleAssignment) => {
     setEditingAssignment(assignment);
+    setAssignmentWarnings([]);
+    setPendingAssignmentPayload(null);
     setAssignmentFormValues({
       weeklyScheduleId: assignment.weeklySchedule ? String(assignment.weeklySchedule.id) : '',
       employeeId: String(assignment.employee.id),
@@ -770,6 +874,8 @@ export default function SchedulePage() {
   const handleCloseAssignmentForm = () => {
     if (!saving) {
       setAssignmentFormOpen(false);
+      setAssignmentWarnings([]);
+      setPendingAssignmentPayload(null);
     }
   };
 
@@ -829,6 +935,14 @@ export default function SchedulePage() {
     }
   };
 
+  const createAssignment = async (payload: ScheduleAssignmentPayload) => {
+    await scheduleAssignmentService.createScheduleAssignment(payload);
+    setAssignmentFormOpen(false);
+    setAssignmentWarnings([]);
+    setPendingAssignmentPayload(null);
+    await loadPageData();
+  };
+
   const handleSubmitAssignment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -877,12 +991,43 @@ export default function SchedulePage() {
     try {
       if (editingAssignment) {
         await scheduleAssignmentService.updateScheduleAssignment(editingAssignment.id, payload);
+        setAssignmentFormOpen(false);
+        await loadPageData();
       } else {
-        await scheduleAssignmentService.createScheduleAssignment(payload);
-      }
+        const validationResult = await scheduleAssignmentService.validateScheduleAssignment(payload);
 
-      setAssignmentFormOpen(false);
-      await loadPageData();
+        if (validationResult.warnings.length > 0) {
+          setAssignmentWarnings(validationResult.warnings);
+          setPendingAssignmentPayload(payload);
+          return;
+        }
+
+        await createAssignment(payload);
+      }
+    } catch (saveError) {
+      setError(getErrorMessage(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancelAssignmentWarning = () => {
+    if (!saving) {
+      setAssignmentWarnings([]);
+      setPendingAssignmentPayload(null);
+    }
+  };
+
+  const handleConfirmAssignmentWarning = async () => {
+    if (!pendingAssignmentPayload) {
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await createAssignment(pendingAssignmentPayload);
     } catch (saveError) {
       setError(getErrorMessage(saveError));
     } finally {
@@ -1032,11 +1177,13 @@ export default function SchedulePage() {
       );
       setSnackbar({
         open: true,
-        message: message || 'Fixed assignments generated.',
+        message: getSuccessMessage(message, 'Fixed assignments generated.'),
         severity: 'success',
       });
       await loadPageData();
       await loadMonthlyLeavesForSchedule(selectedSchedule);
+      await loadAvailabilityPreviewForSchedule(selectedSchedule);
+      await fetchStaffingCheckResults(selectedSchedule);
     } catch (generateError) {
       setSnackbar({
         open: true,
@@ -1049,54 +1196,86 @@ export default function SchedulePage() {
   };
 
   const exportScheduleImage = async () => {
-    const exportArea = document.getElementById('schedule-export-content');
+    const sourceExportArea = document.getElementById('schedule-export-content');
 
-    if (!exportArea) {
+    if (!sourceExportArea) {
       setError('Schedule export area was not found.');
       return;
     }
 
-    const exportTableContainer = exportArea.querySelector<HTMLElement>(
-      '[data-schedule-export-table-container]',
-    );
-    const exportTable = exportArea.querySelector<HTMLElement>('[data-schedule-export-table]');
+    const sourceTitle = sourceExportArea.querySelector<HTMLElement>('[data-schedule-export-title]');
+    const sourceTable = sourceExportArea.querySelector<HTMLTableElement>('[data-schedule-export-table]');
+
+    if (!sourceTitle || !sourceTable) {
+      setError('Schedule export content was not found.');
+      return;
+    }
 
     setExportingImage(true);
     setError(null);
 
-    const previousExportAreaWidth = exportArea.style.width;
-    const previousExportAreaMaxWidth = exportArea.style.maxWidth;
-    const previousTableContainerWidth = exportTableContainer?.style.width ?? '';
-    const previousTableContainerOverflow = exportTableContainer?.style.overflow ?? '';
-    const previousTableWidth = exportTable?.style.width ?? '';
+    const exportClone = document.createElement('div');
 
     try {
-      exportArea.style.width = 'max-content';
-      exportArea.style.maxWidth = 'none';
+      exportClone.id = 'schedule-export-content-clone';
+      exportClone.style.position = 'fixed';
+      exportClone.style.left = '-100000px';
+      exportClone.style.top = '0';
+      exportClone.style.width = 'fit-content';
+      exportClone.style.maxWidth = 'none';
+      exportClone.style.display = 'inline-block';
+      exportClone.style.overflow = 'visible';
+      exportClone.style.backgroundColor = '#ffffff';
 
-      if (exportTableContainer) {
-        exportTableContainer.style.width = 'max-content';
-        exportTableContainer.style.overflow = 'visible';
-      }
+      const titleClone = sourceTitle.cloneNode(true) as HTMLElement;
+      const tableClone = sourceTable.cloneNode(true) as HTMLTableElement;
 
-      if (exportTable) {
-        exportTable.style.width = 'max-content';
-      }
+      const exportStyle = document.createElement('style');
+      exportStyle.textContent = `
+        #schedule-export-content-clone {
+          display: inline-block !important;
+          width: fit-content !important;
+          max-width: none !important;
+        }
+        #schedule-export-content-clone .MuiTableCell-root {
+          position: static !important;
+          left: auto !important;
+          right: auto !important;
+          z-index: auto !important;
+        }
+        #schedule-export-content-clone [data-schedule-export-table] {
+          border-collapse: collapse !important;
+        }
+      `;
+      exportClone.appendChild(exportStyle);
+      exportClone.appendChild(titleClone);
+      exportClone.appendChild(tableClone);
 
+      document.body.appendChild(exportClone);
       await document.fonts.ready;
       await new Promise((resolve) => {
         window.requestAnimationFrame(resolve);
       });
+      await new Promise((resolve) => {
+        window.requestAnimationFrame(resolve);
+      });
 
-      const exportWidth = exportArea.scrollWidth;
-      const exportHeight = exportArea.scrollHeight;
-      const canvas = await html2canvas(exportArea, {
+      const exportWidth = Math.ceil(tableClone.getBoundingClientRect().width);
+      const exportHeight = Math.ceil(exportClone.getBoundingClientRect().height);
+
+      exportClone.style.width = `${exportWidth}px`;
+      titleClone.style.width = `${exportWidth}px`;
+      tableClone.style.width = `${exportWidth}px`;
+
+      const canvas = await html2canvas(exportClone, {
         scale: 2,
         backgroundColor: '#ffffff',
         width: exportWidth,
         height: exportHeight,
         windowWidth: exportWidth,
         windowHeight: exportHeight,
+        scrollX: 0,
+        scrollY: 0,
       });
       const imageUrl = canvas.toDataURL('image/png');
       const downloadLink = document.createElement('a');
@@ -1108,16 +1287,8 @@ export default function SchedulePage() {
     } catch (exportError) {
       setError(getErrorMessage(exportError));
     } finally {
-      exportArea.style.width = previousExportAreaWidth;
-      exportArea.style.maxWidth = previousExportAreaMaxWidth;
-
-      if (exportTableContainer) {
-        exportTableContainer.style.width = previousTableContainerWidth;
-        exportTableContainer.style.overflow = previousTableContainerOverflow;
-      }
-
-      if (exportTable) {
-        exportTable.style.width = previousTableWidth;
+      if (exportClone.parentElement) {
+        exportClone.parentElement.removeChild(exportClone);
       }
 
       setExportingImage(false);
@@ -1158,6 +1329,90 @@ export default function SchedulePage() {
           Staffing check results could not be loaded: {staffingCheckError}
         </Alert>
       ) : null}
+
+      <Stack spacing={2}>
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={2}
+          sx={{
+            alignItems: { xs: 'stretch', sm: 'center' },
+            justifyContent: 'space-between',
+          }}
+        >
+          <Typography variant="h5" component="h3">
+            Weekly Schedules
+          </Typography>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateSchedule}>
+            Add Week
+          </Button>
+        </Stack>
+
+        <TableContainer component={Paper} variant="outlined">
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>ID</TableCell>
+                <TableCell>Start Date</TableCell>
+                <TableCell>End Date</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell align="right">Actions</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {weeklySchedules.map((schedule) => (
+                <TableRow key={schedule.id} hover>
+                  <TableCell>{schedule.id}</TableCell>
+                  <TableCell>{schedule.weekStartDate}</TableCell>
+                  <TableCell>{schedule.weekEndDate}</TableCell>
+                  <TableCell>
+                    <Chip
+                      label={schedule.status}
+                      color={getStatusColor(schedule.status)}
+                      size="small"
+                      variant={schedule.status === 'DRAFT' ? 'outlined' : 'filled'}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    <Tooltip title="Edit weekly schedule">
+                      <IconButton
+                        aria-label="edit weekly schedule"
+                        onClick={() => handleOpenEditSchedule(schedule)}
+                      >
+                        <EditIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Delete weekly schedule">
+                      <IconButton
+                        aria-label="delete weekly schedule"
+                        color="error"
+                        onClick={() => setDeleteScheduleTarget(schedule)}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ))}
+
+              {!loading && weeklySchedules.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                    No weekly schedules found.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                    Loading weekly schedules...
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Stack>
 
       <Stack spacing={2}>
         <Stack
@@ -1265,6 +1520,7 @@ export default function SchedulePage() {
           <Box id="schedule-export-content" sx={{ width: '100%', bgcolor: '#ffffff' }}>
             <Typography
               component="div"
+              data-schedule-export-title
               sx={{
                 py: 1,
                 textAlign: 'center',
@@ -1306,6 +1562,7 @@ export default function SchedulePage() {
             <TableHead>
               <TableRow>
                 <TableCell
+                  align="center"
                   rowSpan={2}
                   sx={{
                     width: scheduleStickyColumnWidth,
@@ -1320,6 +1577,7 @@ export default function SchedulePage() {
                   Job Title
                 </TableCell>
                 <TableCell
+                  align="center"
                   rowSpan={2}
                   sx={{
                     width: scheduleStickyColumnWidth,
@@ -1370,6 +1628,7 @@ export default function SchedulePage() {
               {selectedSchedule ? (
                 <TableRow hover>
                   <TableCell
+                    align="center"
                     sx={{
                       bgcolor: 'background.paper',
                       position: 'sticky',
@@ -1382,6 +1641,7 @@ export default function SchedulePage() {
                     Movie
                   </TableCell>
                   <TableCell
+                    align="center"
                     sx={{
                       bgcolor: 'background.paper',
                       position: 'sticky',
@@ -1437,6 +1697,7 @@ export default function SchedulePage() {
               {selectedSchedule && sortedEmployees.map((employee) => (
                 <TableRow key={employee.id} hover>
                   <TableCell
+                    align="center"
                     sx={{
                       bgcolor: 'background.paper',
                       position: 'sticky',
@@ -1448,6 +1709,7 @@ export default function SchedulePage() {
                     {employee.jobTitle}
                   </TableCell>
                   <TableCell
+                    align="center"
                     sx={{
                       bgcolor: 'background.paper',
                       position: 'sticky',
@@ -1461,6 +1723,10 @@ export default function SchedulePage() {
                   {scheduleDates.map((date) => {
                     const cellAssignments = assignmentGrid.get(`${employee.id}-${date}`) ?? [];
                     const monthlyLeave = monthlyLeaveGrid.get(`${employee.id}-${date}`);
+                    const previewAvailability =
+                      availabilityPreviewGrid.get(`${employee.id}-${date}`) ?? [];
+                    const restAvailability = previewAvailability.find(isRestAvailability);
+                    const hasRestDay = Boolean(monthlyLeave || restAvailability);
 
                     return (
                       <TableCell
@@ -1477,17 +1743,21 @@ export default function SchedulePage() {
                         }}
                         sx={{
                           minWidth: scheduleDateColumnMinWidth,
-                          bgcolor: cellAssignments.length > 0 || monthlyLeave
+                          bgcolor: cellAssignments.length > 0
                             ? 'background.paper'
-                            : 'grey.50',
+                            : hasRestDay
+                              ? restCellColor
+                              : 'grey.50',
                           cursor: 'pointer',
                           transition: 'background-color 120ms ease',
                           px: 1,
                           py: 0.5,
                           '&:hover': {
-                            bgcolor: cellAssignments.length > 0 || monthlyLeave
+                            bgcolor: cellAssignments.length > 0
                               ? 'grey.50'
-                              : 'grey.100',
+                              : hasRestDay
+                                ? restCellColor
+                                : 'grey.100',
                           },
                           '&:focus-visible': {
                             outline: 2,
@@ -1529,15 +1799,18 @@ export default function SchedulePage() {
                                   >
                                     <Box sx={{ minWidth: 0 }}>
                                       <Typography
+                                        component="span"
                                         variant="body2"
                                         sx={{
+                                          fontSize: 15,
+                                          fontWeight: 600,
                                           lineHeight: 1.35,
-                                          fontSize: 13,
-                                          fontWeight: 700,
                                           whiteSpace: 'nowrap',
                                         }}
                                       >
-                                        {formatBoardAssignmentText(assignment, positionName)}
+                                        {`${formatCompactTime(assignment.startTime)}-${formatCompactTime(
+                                          assignment.endTime,
+                                        )}${positionName ? `  ${positionName}` : ''}`}
                                       </Typography>
                                     </Box>
                                     <Stack
@@ -1587,12 +1860,34 @@ export default function SchedulePage() {
                               );
                             })}
                           </Stack>
-                        ) : monthlyLeave ? (
-                          <Typography color="error.main" sx={{ fontWeight: 700 }}>
+                        ) : hasRestDay ? (
+                          <Typography
+                            style={{ color: restTextColor, fontWeight: 400 }}
+                            sx={{ lineHeight: 1.35 }}
+                          >
                             休
                           </Typography>
+                        ) : previewAvailability.length > 0 ? (
+                          <Stack spacing={0.25} data-html2canvas-ignore="true">
+                            {previewAvailability.map((availability) => (
+                              <Typography
+                                key={availability.id}
+                                variant="caption"
+                                sx={{
+                                  color: 'text.disabled',
+                                  display: 'block',
+                                  lineHeight: 1.15,
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {formatAvailabilityPreview(availability)}
+                              </Typography>
+                            ))}
+                          </Stack>
                         ) : (
-                          <Typography color="text.disabled">-</Typography>
+                          <Typography color="text.disabled" data-html2canvas-ignore="true">
+                            -
+                          </Typography>
                         )}
                       </TableCell>
                     );
@@ -1636,174 +1931,129 @@ export default function SchedulePage() {
             </TableContainer>
           </Box>
         </Box>
-      </Stack>
 
-      <Stack spacing={2}>
-        <Stack
-          direction={{ xs: 'column', sm: 'row' }}
-          spacing={2}
-          sx={{
-            alignItems: { xs: 'stretch', sm: 'center' },
-            justifyContent: 'space-between',
-          }}
-        >
-          <Typography variant="h5" component="h3">
-            Weekly Schedules
-          </Typography>
-          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateSchedule}>
-            Add Week
-          </Button>
-        </Stack>
-
-        <TableContainer component={Paper} variant="outlined">
-          <Table>
+        <TableContainer component={Paper} variant="outlined" sx={{ width: '100%', overflowX: 'auto' }}>
+          <Table
+            size="small"
+            sx={{
+              width: '100%',
+              minWidth: `calc(${scheduleStickyColumnWidth}px + ${
+                scheduleDates.length || 1
+              } * ${scheduleDateColumnMinWidth}px)`,
+              tableLayout: 'fixed',
+              borderCollapse: 'collapse',
+              '& th, & td': {
+                borderRight: 1,
+                borderBottom: 1,
+                borderColor: 'divider',
+                px: 1,
+                py: 0.75,
+              },
+              '& th:last-of-type, & td:last-of-type': {
+                borderRight: 0,
+              },
+            }}
+          >
             <TableHead>
               <TableRow>
-                <TableCell>ID</TableCell>
-                <TableCell>Start Date</TableCell>
-                <TableCell>End Date</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell align="right">Actions</TableCell>
+                <TableCell
+                  align="center"
+                  sx={{
+                    width: scheduleStickyColumnWidth,
+                    minWidth: scheduleStickyColumnWidth,
+                    bgcolor: 'grey.100',
+                    fontWeight: 700,
+                  }}
+                >
+                  排班狀況
+                </TableCell>
+                {scheduleDates.map((date) => (
+                  <TableCell
+                    key={date}
+                    align="center"
+                    sx={{
+                      width: `calc((100% - ${scheduleStickyColumnWidth}px) / ${
+                        scheduleDates.length || 1
+                      })`,
+                      minWidth: scheduleDateColumnMinWidth,
+                      bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {formatDateLabel(date)} {formatWeekday(date)}
+                  </TableCell>
+                ))}
               </TableRow>
             </TableHead>
             <TableBody>
-              {weeklySchedules.map((schedule) => (
-                <TableRow key={schedule.id} hover>
-                  <TableCell>{schedule.id}</TableCell>
-                  <TableCell>{schedule.weekStartDate}</TableCell>
-                  <TableCell>{schedule.weekEndDate}</TableCell>
-                  <TableCell>
-                    <Chip
-                      label={schedule.status}
-                      color={getStatusColor(schedule.status)}
-                      size="small"
-                      variant={schedule.status === 'DRAFT' ? 'outlined' : 'filled'}
-                    />
-                  </TableCell>
-                  <TableCell align="right">
-                    <Tooltip title="Edit weekly schedule">
-                      <IconButton
-                        aria-label="edit weekly schedule"
-                        onClick={() => handleOpenEditSchedule(schedule)}
-                      >
-                        <EditIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title="Delete weekly schedule">
-                      <IconButton
-                        aria-label="delete weekly schedule"
-                        color="error"
-                        onClick={() => setDeleteScheduleTarget(schedule)}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  </TableCell>
-                </TableRow>
-              ))}
-
-              {!loading && weeklySchedules.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    No weekly schedules found.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    Loading weekly schedules...
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Stack>
-
-      <Stack spacing={2}>
-        <Stack
-          direction={{ xs: 'column', sm: 'row' }}
-          spacing={2}
-          sx={{
-            alignItems: { xs: 'stretch', sm: 'center' },
-            justifyContent: 'space-between',
-          }}
-        >
-          <Typography variant="h5" component="h3">
-            Schedule Assignments
-          </Typography>
-          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateAssignment}>
-            Assign Employee
-          </Button>
-        </Stack>
-
-        <TableContainer component={Paper} variant="outlined">
-          <Table>
-            <TableHead>
               <TableRow>
-                <TableCell>ID</TableCell>
-                <TableCell>Date</TableCell>
-                <TableCell>Employee</TableCell>
-                <TableCell>Position</TableCell>
-                <TableCell>Start</TableCell>
-                <TableCell>End</TableCell>
-                <TableCell>Note</TableCell>
-                <TableCell align="right">Actions</TableCell>
+                <TableCell
+                  align="center"
+                  sx={{
+                    width: scheduleStickyColumnWidth,
+                    minWidth: scheduleStickyColumnWidth,
+                    fontWeight: 700,
+                    color: 'text.secondary',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  缺人檢查
+                </TableCell>
+                {selectedSchedule ? (
+                  scheduleDates.map((date) => {
+                    const dateResults = understaffingByDate.get(date) ?? [];
+
+                    return (
+                      <TableCell
+                        key={date}
+                        align="center"
+                        sx={{
+                          minWidth: scheduleDateColumnMinWidth,
+                          width: `calc((100% - ${scheduleStickyColumnWidth}px) / ${
+                            scheduleDates.length || 1
+                          })`,
+                          bgcolor: dateResults.length > 0 ? shortageHeaderColor : 'background.paper',
+                          verticalAlign: 'top',
+                        }}
+                      >
+                        {dateResults.length > 0 ? (
+                          <Stack spacing={0.5}>
+                            {dateResults.map((result) => (
+                              <Typography
+                                key={result.id}
+                                variant="caption"
+                                color="error.main"
+                                sx={{
+                                  display: 'block',
+                                  fontWeight: 700,
+                                  lineHeight: 1.3,
+                                  whiteSpace: 'normal',
+                                  wordBreak: 'keep-all',
+                                }}
+                              >
+                                {result.position} {result.period}
+                              </Typography>
+                            ))}
+                          </Stack>
+                        ) : (
+                          <Typography variant="caption" color="success.main" sx={{ fontWeight: 700 }}>
+                            已補足
+                          </Typography>
+                        )}
+                      </TableCell>
+                    );
+                  })
+                ) : (
+                  <TableCell
+                    align="center"
+                    colSpan={Math.max(scheduleDates.length, 1)}
+                    sx={{ color: 'text.secondary' }}
+                  >
+                    Select or create a weekly schedule to view staffing status.
+                  </TableCell>
+                )}
               </TableRow>
-            </TableHead>
-            <TableBody>
-              {assignments.map((assignment) => (
-                <TableRow key={assignment.id} hover>
-                  <TableCell>{assignment.id}</TableCell>
-                  <TableCell>{assignment.date}</TableCell>
-                  <TableCell>
-                    {employeeNameById.get(assignment.employee.id) ?? assignment.employee.name}
-                  </TableCell>
-                  <TableCell>
-                    {getAssignmentDisplayPositionName(assignment) || '-'}
-                  </TableCell>
-                  <TableCell>{formatTime(assignment.startTime)}</TableCell>
-                  <TableCell>{formatTime(assignment.endTime)}</TableCell>
-                  <TableCell>{assignment.note || '-'}</TableCell>
-                  <TableCell align="right">
-                    <Tooltip title="Edit assignment">
-                      <IconButton
-                        aria-label="edit assignment"
-                        onClick={() => handleOpenEditAssignment(assignment)}
-                      >
-                        <EditIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title="Delete assignment">
-                      <IconButton
-                        aria-label="delete assignment"
-                        color="error"
-                        onClick={() => setDeleteAssignmentTarget(assignment)}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  </TableCell>
-                </TableRow>
-              ))}
-
-              {!loading && assignments.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={8} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    No schedule assignments found.
-                  </TableCell>
-                </TableRow>
-              ) : null}
-
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={8} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    Loading schedule assignments...
-                  </TableCell>
-                </TableRow>
-              ) : null}
             </TableBody>
           </Table>
         </TableContainer>
@@ -2098,6 +2348,37 @@ export default function SchedulePage() {
       </Dialog>
 
       <Dialog
+        open={Boolean(pendingAssignmentPayload && assignmentWarnings.length > 0)}
+        onClose={handleCancelAssignmentWarning}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>排班警告</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1} sx={{ pt: 1 }}>
+            {assignmentWarnings.map((warning) => (
+              <Alert key={warning} severity="warning">
+                {warning}
+              </Alert>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelAssignmentWarning} disabled={saving}>
+            取消
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() => void handleConfirmAssignmentWarning()}
+            disabled={saving}
+          >
+            {saving ? '儲存中...' : '仍然排班'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
         open={Boolean(cellActionTarget)}
         onClose={() => setCellActionTarget(null)}
         fullWidth
@@ -2161,9 +2442,15 @@ export default function SchedulePage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCellActionTarget(null)}>Close</Button>
-          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateAssignmentFromCellActions}>
-            Add Assignment
-          </Button>
+          {cellActionTarget && cellActionTarget.assignments.length === 0 ? (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={handleOpenCreateAssignmentFromCellActions}
+            >
+              Add Assignment
+            </Button>
+          ) : null}
         </DialogActions>
       </Dialog>
 

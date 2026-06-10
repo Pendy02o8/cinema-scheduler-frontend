@@ -3,6 +3,7 @@ import MainLayout from '../layouts/MainLayout';
 import AvailabilityPage from '../pages/AvailabilityPage';
 import EmployeePage from '../pages/EmployeePage';
 import LaborStatsPage from '../pages/LaborStatsPage';
+import MonthlyLeavePage from '../pages/MonthlyLeavePage';
 import OverstaffingCheckPage from '../pages/OverstaffingCheckPage';
 import PositionPage from '../pages/PositionPage';
 import SchedulePage from '../pages/SchedulePage';
@@ -18,6 +19,7 @@ export default function AppRoutes() {
           <Route path="/availability" element={<AvailabilityPage />} />
           <Route path="/positions" element={<PositionPage />} />
           <Route path="/weekly-schedules" element={<SchedulePage />} />
+          <Route path="/monthly-leaves" element={<MonthlyLeavePage />} />
           <Route path="/work-hour-statistics" element={<LaborStatsPage />} />
           <Route path="/understaffing-check" element={<UnderstaffingCheckPage />} />
           <Route path="/overstaffing-check" element={<OverstaffingCheckPage />} />

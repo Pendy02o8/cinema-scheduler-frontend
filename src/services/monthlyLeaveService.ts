@@ -14,7 +14,11 @@ export const monthlyLeaveService = {
     return monthlyLeaveApi.getByRange(startDate, endDate);
   },
 
-  createMonthlyLeave(payload: MonthlyLeavePayload) {
+  createMonthlyLeave(employeeId: number, leaveDate: string) {
+    return monthlyLeaveApi.createForEmployee(employeeId, leaveDate);
+  },
+
+  createMonthlyLeaveWithPayload(payload: MonthlyLeavePayload) {
     return monthlyLeaveApi.create(payload);
   },
 

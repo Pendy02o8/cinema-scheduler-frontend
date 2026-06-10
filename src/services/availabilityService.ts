@@ -21,4 +21,8 @@ export const availabilityService = {
   deleteAvailability(id: number) {
     return availabilityApi.remove(id);
   },
+
+  importAvailabilityExcel(file: File, weeklyScheduleId: number) {
+    return availabilityApi.importExcel(file, weeklyScheduleId);
+  },
 };

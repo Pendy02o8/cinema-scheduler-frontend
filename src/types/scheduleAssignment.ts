@@ -6,7 +6,7 @@ export type ScheduleAssignment = {
   id: number;
   weeklySchedule?: WeeklySchedule | null;
   employee: Employee;
-  position: Position;
+  position?: Position | null;
   date: string;
   startTime: string;
   endTime: string;
@@ -18,7 +18,7 @@ export type ScheduleAssignment = {
 export type ScheduleAssignmentPayload = {
   weeklySchedule?: Pick<WeeklySchedule, 'id'> | null;
   employee: Pick<Employee, 'id'>;
-  position: Pick<Position, 'id'>;
+  position?: Pick<Position, 'id'> | null;
   date: string;
   startTime: string;
   endTime: string;

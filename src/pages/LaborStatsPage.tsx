@@ -22,8 +22,10 @@ import {
 import type { ChangeEvent, FormEvent } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { employeeService } from '../services/employeeService';
+import { weeklyScheduleService } from '../services/weeklyScheduleService';
 import { workHourService } from '../services/workHourService';
 import type { Employee } from '../types/employee';
+import type { WeeklySchedule } from '../types/weeklySchedule';
 import type {
   SingleEmployeeWorkHourSummary,
   WorkHourSummary,
@@ -34,6 +36,7 @@ type QueryMode = 'all' | 'employee';
 type QueryFormValues = {
   mode: QueryMode;
   employeeId: string;
+  weeklyScheduleId: string;
   startDate: string;
   endDate: string;
 };
@@ -65,6 +68,7 @@ function getToday() {
 
 export default function LaborStatsPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [allSummaries, setAllSummaries] = useState<WorkHourSummary[]>([]);
   const [employeeSummary, setEmployeeSummary] =
     useState<SingleEmployeeWorkHourSummary | null>(emptySummary);
@@ -74,17 +78,22 @@ export default function LaborStatsPage() {
   const [formValues, setFormValues] = useState<QueryFormValues>({
     mode: 'all',
     employeeId: '',
+    weeklyScheduleId: '',
     startDate: getMonthStart(),
     endDate: getToday(),
   });
 
-  const loadEmployees = useCallback(async () => {
+  const loadReferenceData = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const data = await employeeService.getEmployees();
-      setEmployees(data);
+      const [employeeData, weeklyScheduleData] = await Promise.all([
+        employeeService.getEmployees(),
+        weeklyScheduleService.getWeeklySchedules(),
+      ]);
+      setEmployees(employeeData);
+      setWeeklySchedules(weeklyScheduleData);
     } catch (loadError) {
       setError(getErrorMessage(loadError));
     } finally {
@@ -94,13 +103,13 @@ export default function LaborStatsPage() {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      void loadEmployees();
+      void loadReferenceData();
     }, 0);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [loadEmployees]);
+  }, [loadReferenceData]);
 
   const handleDateChange =
     (field: keyof Pick<QueryFormValues, 'startDate' | 'endDate'>) =>
@@ -179,10 +188,10 @@ export default function LaborStatsPage() {
         <Button
           variant="outlined"
           startIcon={<RefreshIcon />}
-          onClick={() => void loadEmployees()}
+          onClick={() => void loadReferenceData()}
           disabled={loading || querying}
         >
-          Refresh Employees
+          Refresh Data
         </Button>
       </Stack>
 
@@ -195,6 +204,35 @@ export default function LaborStatsPage() {
             spacing={2}
             sx={{ alignItems: { xs: 'stretch', md: 'center' } }}
           >
+            <FormControl sx={{ minWidth: { xs: '100%', md: 260 } }}>
+              <InputLabel id="work-hour-week-label">Weekly Schedule</InputLabel>
+              <Select
+                labelId="work-hour-week-label"
+                label="Weekly Schedule"
+                value={formValues.weeklyScheduleId}
+                onChange={(event) => {
+                  const weeklyScheduleId = event.target.value;
+                  const weeklySchedule = weeklySchedules.find(
+                    (schedule) => String(schedule.id) === weeklyScheduleId,
+                  );
+
+                  setFormValues((current) => ({
+                    ...current,
+                    weeklyScheduleId,
+                    startDate: weeklySchedule?.weekStartDate ?? current.startDate,
+                    endDate: weeklySchedule?.weekEndDate ?? current.endDate,
+                  }));
+                }}
+              >
+                <MenuItem value="">Custom Date Range</MenuItem>
+                {weeklySchedules.map((schedule) => (
+                  <MenuItem key={schedule.id} value={String(schedule.id)}>
+                    {schedule.weekStartDate} to {schedule.weekEndDate}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
             <FormControl sx={{ minWidth: { xs: '100%', md: 180 } }}>
               <InputLabel id="work-hour-mode-label">Scope</InputLabel>
               <Select

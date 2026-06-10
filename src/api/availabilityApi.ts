@@ -27,4 +27,17 @@ export const availabilityApi = {
   async remove(id: number) {
     await httpClient.delete(`${availabilityPath}/${id}`);
   },
+
+  async importExcel(file: File, weeklyScheduleId: number) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('weeklyScheduleId', String(weeklyScheduleId));
+
+    const response = await httpClient.post<string>(`${availabilityPath}/import`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
 };

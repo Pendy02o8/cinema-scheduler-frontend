@@ -1,6 +1,6 @@
 import type { Employee } from './employee';
 
-export type AvailabilityType = 'BEFORE' | 'AFTER' | 'UNAVAILABLE';
+export type AvailabilityType = 'BEFORE' | 'AFTER' | 'UNAVAILABLE' | 'ALL_DAY';
 
 export type WeeklyScheduleSummary = {
   id: number;

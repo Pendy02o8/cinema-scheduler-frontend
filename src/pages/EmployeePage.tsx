@@ -11,9 +11,13 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
   FormControlLabel,
   IconButton,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Switch,
   Table,
@@ -36,6 +40,8 @@ type EmployeeFormValues = {
   jobTitle: string;
   isActive: boolean;
   note: string;
+  employeeType: '' | 'PART_TIME' | 'FULL_TIME' | 'CLEANER';
+  fixedShiftType: '' | 'MORNING' | 'EVENING' | 'NONE';
 };
 
 const emptyFormValues: EmployeeFormValues = {
@@ -43,6 +49,8 @@ const emptyFormValues: EmployeeFormValues = {
   jobTitle: '',
   isActive: true,
   note: '',
+  employeeType: '',
+  fixedShiftType: '',
 };
 
 function getErrorMessage(error: unknown) {
@@ -100,6 +108,8 @@ export default function EmployeePage() {
       jobTitle: employee.jobTitle,
       isActive: employee.isActive,
       note: employee.note ?? '',
+      employeeType: employee.employeeType ?? '',
+      fixedShiftType: employee.fixedShiftType ?? '',
     });
     setFormOpen(true);
   };
@@ -134,6 +144,8 @@ export default function EmployeePage() {
       jobTitle: formValues.jobTitle.trim(),
       isActive: formValues.isActive,
       note: formValues.note.trim(),
+      employeeType: formValues.employeeType || null,
+      fixedShiftType: formValues.fixedShiftType || null,
     };
 
     if (!payload.name || !payload.jobTitle) {
@@ -221,6 +233,8 @@ export default function EmployeePage() {
               <TableCell>ID</TableCell>
               <TableCell>Name</TableCell>
               <TableCell>Job Title</TableCell>
+              <TableCell>Employee Type</TableCell>
+              <TableCell>Fixed Shift</TableCell>
               <TableCell>Status</TableCell>
               <TableCell>Note</TableCell>
               <TableCell align="right">Actions</TableCell>
@@ -232,6 +246,8 @@ export default function EmployeePage() {
                 <TableCell>{employee.id}</TableCell>
                 <TableCell>{employee.name}</TableCell>
                 <TableCell>{employee.jobTitle}</TableCell>
+                <TableCell>{employee.employeeType || '-'}</TableCell>
+                <TableCell>{employee.fixedShiftType || '-'}</TableCell>
                 <TableCell>
                   <Chip
                     label={employee.isActive ? 'Active' : 'Inactive'}
@@ -262,7 +278,7 @@ export default function EmployeePage() {
 
             {!loading && employees.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                <TableCell colSpan={8} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                   No employees found.
                 </TableCell>
               </TableRow>
@@ -270,7 +286,7 @@ export default function EmployeePage() {
 
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                <TableCell colSpan={8} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                   Loading employees...
                 </TableCell>
               </TableRow>
@@ -298,6 +314,44 @@ export default function EmployeePage() {
                 required
                 fullWidth
               />
+              <FormControl fullWidth>
+                <InputLabel id="employee-type-label">Employee Type</InputLabel>
+                <Select
+                  labelId="employee-type-label"
+                  label="Employee Type"
+                  value={formValues.employeeType}
+                  onChange={(event) =>
+                    setFormValues((current) => ({
+                      ...current,
+                      employeeType: event.target.value as EmployeeFormValues['employeeType'],
+                    }))
+                  }
+                >
+                  <MenuItem value="">Not Set</MenuItem>
+                  <MenuItem value="PART_TIME">PART_TIME</MenuItem>
+                  <MenuItem value="FULL_TIME">FULL_TIME</MenuItem>
+                  <MenuItem value="CLEANER">CLEANER</MenuItem>
+                </Select>
+              </FormControl>
+              <FormControl fullWidth>
+                <InputLabel id="fixed-shift-type-label">Fixed Shift Type</InputLabel>
+                <Select
+                  labelId="fixed-shift-type-label"
+                  label="Fixed Shift Type"
+                  value={formValues.fixedShiftType}
+                  onChange={(event) =>
+                    setFormValues((current) => ({
+                      ...current,
+                      fixedShiftType: event.target.value as EmployeeFormValues['fixedShiftType'],
+                    }))
+                  }
+                >
+                  <MenuItem value="">Not Set</MenuItem>
+                  <MenuItem value="MORNING">MORNING</MenuItem>
+                  <MenuItem value="EVENING">EVENING</MenuItem>
+                  <MenuItem value="NONE">NONE</MenuItem>
+                </Select>
+              </FormControl>
               <TextField
                 label="Note"
                 value={formValues.note}

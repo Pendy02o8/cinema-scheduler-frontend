@@ -28,4 +28,15 @@ export const scheduleAssignmentApi = {
   async remove(id: number) {
     await httpClient.delete(`${scheduleAssignmentPath}/${id}`);
   },
+
+  async generateFixed(weeklyScheduleId: number, startDate: string, endDate: string) {
+    const response = await httpClient.post<string>(`${scheduleAssignmentPath}/generate-fixed`, null, {
+      params: {
+        weeklyScheduleId,
+        startDate,
+        endDate,
+      },
+    });
+    return response.data;
+  },
 };

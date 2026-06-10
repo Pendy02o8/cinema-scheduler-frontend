@@ -20,15 +20,18 @@ import {
   Typography,
 } from '@mui/material';
 import type { ChangeEvent, FormEvent } from 'react';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { staffingCheckService } from '../services/staffingCheckService';
+import { weeklyScheduleService } from '../services/weeklyScheduleService';
 import type { StaffingCheckResult } from '../types/staffingCheck';
+import type { WeeklySchedule } from '../types/weeklySchedule';
 
 type CheckMode = 'date' | 'week';
 
 type UnderstaffingFormValues = {
   mode: CheckMode;
   date: string;
+  weeklyScheduleId: string;
   startDate: string;
   endDate: string;
 };
@@ -49,18 +52,67 @@ function getToday() {
   return `${year}-${month}-${day}`;
 }
 
+function formatDateWithWeekday(date?: string) {
+  if (!date) {
+    return '-';
+  }
+
+  const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六'];
+  const parsedDate = new Date(`${date}T00:00:00`);
+  return `${date}（${weekdayLabels[parsedDate.getDay()]}）`;
+}
+
 export default function UnderstaffingCheckPage() {
   const today = getToday();
+  const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [results, setResults] = useState<StaffingCheckResult[]>([]);
+  const [loadingSchedules, setLoadingSchedules] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasChecked, setHasChecked] = useState(false);
   const [formValues, setFormValues] = useState<UnderstaffingFormValues>({
-    mode: 'date',
+    mode: 'week',
     date: today,
+    weeklyScheduleId: '',
     startDate: today,
     endDate: today,
   });
+
+  const loadWeeklySchedules = useCallback(async () => {
+    setLoadingSchedules(true);
+    setError(null);
+
+    try {
+      const data = await weeklyScheduleService.getWeeklySchedules();
+      setWeeklySchedules(data);
+      setFormValues((current) => {
+        if (current.weeklyScheduleId || !data[0]) {
+          return current;
+        }
+
+        return {
+          ...current,
+          weeklyScheduleId: String(data[0].id),
+          startDate: data[0].weekStartDate,
+          endDate: data[0].weekEndDate,
+        };
+      });
+    } catch (loadError) {
+      setError(getErrorMessage(loadError));
+    } finally {
+      setLoadingSchedules(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadWeeklySchedules();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [loadWeeklySchedules]);
 
   const handleDateChange =
     (field: keyof Pick<UnderstaffingFormValues, 'date' | 'startDate' | 'endDate'>) =>
@@ -80,8 +132,8 @@ export default function UnderstaffingCheckPage() {
     }
 
     if (formValues.mode === 'week') {
-      if (!formValues.startDate || !formValues.endDate) {
-        setError('Start date and end date are required.');
+      if (!formValues.weeklyScheduleId) {
+        setError('Weekly schedule is required.');
         return;
       }
 
@@ -145,7 +197,7 @@ export default function UnderstaffingCheckPage() {
                 }
               >
                 <MenuItem value="date">Single Date</MenuItem>
-                <MenuItem value="week">Date Range</MenuItem>
+                <MenuItem value="week">Weekly Schedule</MenuItem>
               </Select>
             </FormControl>
 
@@ -160,12 +212,40 @@ export default function UnderstaffingCheckPage() {
               />
             ) : (
               <>
+                <FormControl sx={{ minWidth: { xs: '100%', md: 280 } }} required>
+                  <InputLabel id="understaffing-week-label">Weekly Schedule</InputLabel>
+                  <Select
+                    labelId="understaffing-week-label"
+                    label="Weekly Schedule"
+                    value={formValues.weeklyScheduleId}
+                    onChange={(event) => {
+                      const weeklyScheduleId = event.target.value;
+                      const weeklySchedule = weeklySchedules.find(
+                        (schedule) => String(schedule.id) === weeklyScheduleId,
+                      );
+
+                      setFormValues((current) => ({
+                        ...current,
+                        weeklyScheduleId,
+                        startDate: weeklySchedule?.weekStartDate ?? current.startDate,
+                        endDate: weeklySchedule?.weekEndDate ?? current.endDate,
+                      }));
+                    }}
+                  >
+                    {weeklySchedules.map((schedule) => (
+                      <MenuItem key={schedule.id} value={String(schedule.id)}>
+                        {schedule.weekStartDate} to {schedule.weekEndDate}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
                 <TextField
                   label="Start Date"
                   type="date"
                   value={formValues.startDate}
                   onChange={handleDateChange('startDate')}
                   required
+                  disabled
                   slotProps={{ inputLabel: { shrink: true } }}
                 />
                 <TextField
@@ -174,6 +254,7 @@ export default function UnderstaffingCheckPage() {
                   value={formValues.endDate}
                   onChange={handleDateChange('endDate')}
                   required
+                  disabled
                   slotProps={{ inputLabel: { shrink: true } }}
                 />
               </>
@@ -183,7 +264,7 @@ export default function UnderstaffingCheckPage() {
               type="submit"
               variant="contained"
               startIcon={<SearchIcon />}
-              disabled={checking}
+              disabled={checking || loadingSchedules}
               sx={{ minWidth: 140 }}
             >
               {checking ? 'Checking...' : 'Check'}
@@ -209,7 +290,7 @@ export default function UnderstaffingCheckPage() {
           <TableBody>
             {results.map((result) => (
               <TableRow key={result.id} hover>
-                <TableCell>{result.date || formValues.date || '-'}</TableCell>
+                <TableCell>{formatDateWithWeekday(result.date || formValues.date)}</TableCell>
                 <TableCell>
                   <Chip label={result.position} color="warning" variant="outlined" size="small" />
                 </TableCell>

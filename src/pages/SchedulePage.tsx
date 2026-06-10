@@ -1,7 +1,9 @@
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
+import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
 import {
   Alert,
   Box,
@@ -17,6 +19,7 @@ import {
   MenuItem,
   Paper,
   Select,
+  Snackbar,
   Stack,
   Table,
   TableBody,
@@ -28,14 +31,19 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import html2canvas from 'html2canvas';
 import type { ChangeEvent, FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { employeeService } from '../services/employeeService';
+import { availabilityService } from '../services/availabilityService';
+import { monthlyLeaveService } from '../services/monthlyLeaveService';
 import { positionService } from '../services/positionService';
 import { scheduleAssignmentService } from '../services/scheduleAssignmentService';
+import { staffingCheckService } from '../services/staffingCheckService';
 import { weeklyScheduleService } from '../services/weeklyScheduleService';
 import type { Employee } from '../types/employee';
 import type { Position } from '../types/position';
+import type { MonthlyLeave } from '../types/monthlyLeave';
 import type {
   ScheduleAssignment,
   ScheduleAssignmentPayload,
@@ -62,6 +70,25 @@ type AssignmentFormValues = {
   note: string;
 };
 
+type SnackbarState = {
+  open: boolean;
+  message: string;
+  severity: 'success' | 'error';
+};
+
+type CellActionTarget = {
+  employee: Employee;
+  date: string;
+  assignments: ScheduleAssignment[];
+};
+
+type OverstaffingRange = {
+  date: string;
+  position: string;
+  startTime: string;
+  endTime: string;
+};
+
 const emptyScheduleFormValues: WeeklyScheduleFormValues = {
   weekStartDate: '',
   weekEndDate: '',
@@ -79,8 +106,59 @@ const emptyAssignmentFormValues: AssignmentFormValues = {
 };
 
 const scheduleStatuses: WeeklyScheduleStatus[] = ['DRAFT', 'PUBLISHED', 'ARCHIVED'];
+const movieNotesStorageKey = 'cinema-scheduler-movie-notes';
+const scheduleStartMinuteOptions = ['20', '50'];
+const scheduleEndMinuteOptions = ['00', '30'];
+const scheduleHourOptions = Array.from({ length: 24 }, (_, hour) =>
+  String(hour).padStart(2, '0'),
+);
+const shortageHeaderColor = '#ffd6e0';
+const overstaffingAssignmentColor = '#fff3cd';
+const scheduleStickyColumnWidth = 96;
+const scheduleDateColumnMinWidth = 104;
+const jobTitleOrder: Record<string, number> = {
+  副理: 1,
+  會計: 2,
+  主任: 3,
+  早班正職: 4,
+  早班正職人員: 4,
+  組長: 5,
+  總務: 6,
+  放映師: 7,
+  晚班正職: 8,
+  晚班正職人員: 8,
+  正職清潔: 9,
+  晚班清潔: 10,
+  早班工讀生: 11,
+  晚班工讀生: 12,
+};
+const noPositionRequiredJobTitles = ['會計', '早班清潔', '晚班清潔'];
 
 function getErrorMessage(error: unknown) {
+  if (
+    typeof error === 'object'
+    && error !== null
+    && 'response' in error
+    && typeof error.response === 'object'
+    && error.response !== null
+    && 'data' in error.response
+  ) {
+    const responseData = error.response.data;
+
+    if (typeof responseData === 'string') {
+      return responseData;
+    }
+
+    if (
+      typeof responseData === 'object'
+      && responseData !== null
+      && 'message' in responseData
+      && typeof responseData.message === 'string'
+    ) {
+      return responseData.message;
+    }
+  }
+
   if (error instanceof Error) {
     return error.message;
   }
@@ -108,6 +186,111 @@ function formatTime(time?: string | null) {
   return time.slice(0, 5);
 }
 
+function formatCompactTime(time?: string | null) {
+  return formatTime(time).replace(':', '');
+}
+
+function isNoPositionRequiredJobTitle(jobTitle?: string | null) {
+  return Boolean(jobTitle && noPositionRequiredJobTitles.includes(jobTitle));
+}
+
+function getAssignmentPositionName(assignment: ScheduleAssignment) {
+  return assignment.position?.name ?? '';
+}
+
+function formatBoardAssignmentText(
+  assignment: ScheduleAssignment,
+  positionName: string,
+) {
+  const timeText = `${formatCompactTime(assignment.startTime)}-${formatCompactTime(
+    assignment.endTime,
+  )}`;
+
+  return positionName ? `${timeText}  ${positionName}` : timeText;
+}
+
+function getTimeHour(time: string) {
+  return time.split(':')[0] ?? '';
+}
+
+function getTimeMinute(time: string, minuteOptions: string[]) {
+  const minute = time.split(':')[1] ?? '';
+  return minuteOptions.includes(minute) ? minute : '';
+}
+
+function buildScheduleTime(
+  currentTime: string,
+  changedPart: 'hour' | 'minute',
+  changedValue: string,
+  minuteOptions: string[],
+  defaultMinute: string,
+) {
+  const currentHour = getTimeHour(currentTime);
+  const currentMinute = getTimeMinute(currentTime, minuteOptions);
+  const nextHour = changedPart === 'hour' ? changedValue : currentHour || '00';
+  const nextMinute = changedPart === 'minute' ? changedValue : currentMinute || defaultMinute;
+
+  return `${nextHour}:${nextMinute}`;
+}
+
+function normalizeStaffingText(value: string) {
+  return value.trim().replace(/\s+/g, '');
+}
+
+function parseStaffingPeriod(period: string) {
+  const match = period.match(/(\d{2}:\d{2})\s*[~-]\s*(\d{2}:\d{2})/);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    startTime: match[1],
+    endTime: match[2],
+  };
+}
+
+function hasTimeOverlap(
+  firstStartTime: string,
+  firstEndTime: string,
+  secondStartTime: string,
+  secondEndTime: string,
+) {
+  const firstRange = getShiftRange(firstStartTime, firstEndTime);
+  const secondRange = getShiftRange(secondStartTime, secondEndTime);
+
+  return firstRange.startMinutes < secondRange.endMinutes
+    && firstRange.endMinutes > secondRange.startMinutes;
+}
+
+function isAssignmentOverstaffed(
+  assignment: ScheduleAssignment,
+  overstaffingRanges: OverstaffingRange[],
+) {
+  const positionName = getAssignmentPositionName(assignment);
+
+  if (!positionName) {
+    return false;
+  }
+
+  const assignmentStartTime = formatTime(assignment.startTime);
+  const assignmentEndTime = formatTime(assignment.endTime);
+  const assignmentPosition = normalizeStaffingText(positionName);
+
+  return overstaffingRanges.some((range) => {
+    return (
+      range.date === assignment.date
+      && normalizeStaffingText(range.position) === assignmentPosition
+      && hasTimeOverlap(
+        assignmentStartTime,
+        assignmentEndTime,
+        range.startTime,
+        range.endTime,
+      )
+    );
+  });
+}
+
 function formatDateLabel(date: string) {
   const [, month, day] = date.split('-');
   return `${Number(month)}/${Number(day)}`;
@@ -124,6 +307,18 @@ function formatDateValue(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function formatDateStamp(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function getDefaultScheduleMonth(schedule: WeeklySchedule | null) {
+  const titleDate = schedule ? new Date(`${schedule.weekStartDate}T00:00:00`) : new Date();
+  return String(titleDate.getMonth() + 1);
 }
 
 function getDatesBetween(startDate: string, endDate: string) {
@@ -154,6 +349,20 @@ function toMinutes(time: string) {
   return hours * 60 + minutes;
 }
 
+function getShiftRange(startTime: string, endTime: string) {
+  const startMinutes = toMinutes(startTime);
+  let endMinutes = toMinutes(endTime);
+
+  if (endMinutes <= startMinutes) {
+    endMinutes += 24 * 60;
+  }
+
+  return {
+    startMinutes,
+    endMinutes,
+  };
+}
+
 function hasAssignmentConflict(
   assignments: ScheduleAssignment[],
   editingAssignmentId: number | null,
@@ -162,8 +371,7 @@ function hasAssignmentConflict(
   startTime: string,
   endTime: string,
 ) {
-  const newStart = toMinutes(startTime);
-  const newEnd = toMinutes(endTime);
+  const newRange = getShiftRange(startTime, endTime);
 
   return assignments.some((assignment) => {
     if (assignment.id === editingAssignmentId) {
@@ -174,29 +382,68 @@ function hasAssignmentConflict(
       return false;
     }
 
-    const existingStart = toMinutes(formatTime(assignment.startTime));
-    const existingEnd = toMinutes(formatTime(assignment.endTime));
+    const existingRange = getShiftRange(
+      formatTime(assignment.startTime),
+      formatTime(assignment.endTime),
+    );
 
-    return newStart < existingEnd && newEnd > existingStart;
+    return newRange.startMinutes < existingRange.endMinutes
+      && newRange.endMinutes > existingRange.startMinutes;
   });
+}
+
+function getStoredMovieNotes() {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  const storedValue = window.localStorage.getItem(movieNotesStorageKey);
+
+  if (!storedValue) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(storedValue) as Record<string, string>;
+  } catch {
+    return {};
+  }
 }
 
 export default function SchedulePage() {
   const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [assignments, setAssignments] = useState<ScheduleAssignment[]>([]);
+  const [monthlyLeaves, setMonthlyLeaves] = useState<MonthlyLeave[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [exportingImage, setExportingImage] = useState(false);
+  const [importingAvailability, setImportingAvailability] = useState(false);
+  const [generatingFixedAssignments, setGeneratingFixedAssignments] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [staffingCheckError, setStaffingCheckError] = useState<string | null>(null);
+  const [shortageDateSet, setShortageDateSet] = useState<Set<string>>(() => new Set());
+  const [overstaffingRanges, setOverstaffingRanges] = useState<OverstaffingRange[]>([]);
   const [scheduleFormOpen, setScheduleFormOpen] = useState(false);
   const [assignmentFormOpen, setAssignmentFormOpen] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<WeeklySchedule | null>(null);
   const [editingAssignment, setEditingAssignment] = useState<ScheduleAssignment | null>(null);
+  const [cellActionTarget, setCellActionTarget] = useState<CellActionTarget | null>(null);
   const [deleteScheduleTarget, setDeleteScheduleTarget] = useState<WeeklySchedule | null>(null);
   const [deleteAssignmentTarget, setDeleteAssignmentTarget] =
     useState<ScheduleAssignment | null>(null);
   const [selectedScheduleId, setSelectedScheduleId] = useState('');
+  const [scheduleMonthOverrides, setScheduleMonthOverrides] = useState<Record<string, string>>({});
+  const [movieNotes, setMovieNotes] = useState<Record<string, string>>(getStoredMovieNotes);
+  const [movieNoteDate, setMovieNoteDate] = useState<string | null>(null);
+  const [movieNoteValue, setMovieNoteValue] = useState('');
+  const [availabilityImportFile, setAvailabilityImportFile] = useState<File | null>(null);
+  const [snackbar, setSnackbar] = useState<SnackbarState>({
+    open: false,
+    message: '',
+    severity: 'success',
+  });
   const [scheduleFormValues, setScheduleFormValues] = useState<WeeklyScheduleFormValues>(
     emptyScheduleFormValues,
   );
@@ -212,9 +459,34 @@ export default function SchedulePage() {
     return new Map(positions.map((position) => [position.id, position.name]));
   }, [positions]);
 
+  const getAssignmentDisplayPositionName = useCallback(
+    (assignment: ScheduleAssignment) => {
+      if (!assignment.position) {
+        return '';
+      }
+
+      return positionNameById.get(assignment.position.id) ?? assignment.position.name;
+    },
+    [positionNameById],
+  );
+
   const selectedSchedule = useMemo(() => {
     return weeklySchedules.find((schedule) => String(schedule.id) === selectedScheduleId) ?? null;
   }, [selectedScheduleId, weeklySchedules]);
+
+  const scheduleMonthKey = selectedScheduleId || 'default';
+  const scheduleMonth =
+    scheduleMonthOverrides[scheduleMonthKey] ?? getDefaultScheduleMonth(selectedSchedule);
+  const scheduleTitle = `環球中華影城${scheduleMonth}月班表`;
+
+  const selectedAssignmentEmployee = useMemo(() => {
+    return employees.find((employee) => String(employee.id) === assignmentFormValues.employeeId)
+      ?? null;
+  }, [assignmentFormValues.employeeId, employees]);
+
+  const assignmentPositionRequired = !isNoPositionRequiredJobTitle(
+    selectedAssignmentEmployee?.jobTitle,
+  );
 
   const scheduleDates = useMemo(() => {
     if (!selectedSchedule) {
@@ -226,13 +498,14 @@ export default function SchedulePage() {
 
   const sortedEmployees = useMemo(() => {
     return [...employees].sort((firstEmployee, secondEmployee) => {
-      const titleCompare = firstEmployee.jobTitle.localeCompare(secondEmployee.jobTitle);
+      const firstOrder = jobTitleOrder[firstEmployee.jobTitle] ?? 999;
+      const secondOrder = jobTitleOrder[secondEmployee.jobTitle] ?? 999;
 
-      if (titleCompare !== 0) {
-        return titleCompare;
+      if (firstOrder !== secondOrder) {
+        return firstOrder - secondOrder;
       }
 
-      return firstEmployee.name.localeCompare(secondEmployee.name);
+      return firstEmployee.id - secondEmployee.id;
     });
   }, [employees]);
 
@@ -272,6 +545,16 @@ export default function SchedulePage() {
     return grid;
   }, [visibleAssignments]);
 
+  const monthlyLeaveGrid = useMemo(() => {
+    const grid = new Map<string, MonthlyLeave>();
+
+    monthlyLeaves.forEach((monthlyLeave) => {
+      grid.set(`${monthlyLeave.employee.id}-${monthlyLeave.leaveDate}`, monthlyLeave);
+    });
+
+    return grid;
+  }, [monthlyLeaves]);
+
   const loadPageData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -305,6 +588,75 @@ export default function SchedulePage() {
     }
   }, []);
 
+  const loadMonthlyLeavesForSchedule = useCallback(async (schedule: WeeklySchedule | null) => {
+    if (!schedule) {
+      setMonthlyLeaves([]);
+      return;
+    }
+
+    try {
+      const data = await monthlyLeaveService.getMonthlyLeavesByRange(
+        schedule.weekStartDate,
+        schedule.weekEndDate,
+      );
+      setMonthlyLeaves(data);
+    } catch (loadError) {
+      setMonthlyLeaves([]);
+      setStaffingCheckError(getErrorMessage(loadError));
+    }
+  }, []);
+
+  const fetchStaffingCheckResults = useCallback(async (schedule: WeeklySchedule | null) => {
+    if (!schedule) {
+      setShortageDateSet(new Set());
+      setOverstaffingRanges([]);
+      setStaffingCheckError(null);
+      return;
+    }
+
+    try {
+      const query = {
+        startDate: schedule.weekStartDate,
+        endDate: schedule.weekEndDate,
+      };
+      const [understaffingResults, overstaffingResults] = await Promise.all([
+        staffingCheckService.getUnderstaffingByWeek(query),
+        staffingCheckService.getOverstaffingByWeek(query),
+      ]);
+
+      setShortageDateSet(
+        new Set(
+          understaffingResults
+            .map((result) => result.date)
+            .filter((date): date is string => Boolean(date)),
+        ),
+      );
+      setOverstaffingRanges(
+        overstaffingResults.flatMap((result) => {
+          const period = parseStaffingPeriod(result.period);
+
+          if (!result.date || !period) {
+            return [];
+          }
+
+          return [
+            {
+              date: result.date,
+              position: result.position,
+              startTime: period.startTime,
+              endTime: period.endTime,
+            },
+          ];
+        }),
+      );
+      setStaffingCheckError(null);
+    } catch (checkError) {
+      setShortageDateSet(new Set());
+      setOverstaffingRanges([]);
+      setStaffingCheckError(getErrorMessage(checkError));
+    }
+  }, []);
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       void loadPageData();
@@ -314,6 +666,17 @@ export default function SchedulePage() {
       window.clearTimeout(timeoutId);
     };
   }, [loadPageData]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void fetchStaffingCheckResults(selectedSchedule);
+      void loadMonthlyLeavesForSchedule(selectedSchedule);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [assignments, fetchStaffingCheckResults, loadMonthlyLeavesForSchedule, selectedSchedule]);
 
   const handleOpenCreateSchedule = () => {
     setEditingSchedule(null);
@@ -352,18 +715,50 @@ export default function SchedulePage() {
     setAssignmentFormOpen(true);
   };
 
+  const handleOpenCellActions = (
+    employee: Employee,
+    date: string,
+    cellAssignments: ScheduleAssignment[],
+  ) => {
+    if (cellAssignments.length === 0) {
+      handleOpenCreateAssignmentForCell(employee, date);
+      return;
+    }
+
+    setCellActionTarget({
+      employee,
+      date,
+      assignments: cellAssignments,
+    });
+  };
+
+  const handleOpenCreateAssignmentFromCellActions = () => {
+    if (!cellActionTarget) {
+      return;
+    }
+
+    handleOpenCreateAssignmentForCell(cellActionTarget.employee, cellActionTarget.date);
+    setCellActionTarget(null);
+  };
+
   const handleOpenEditAssignment = (assignment: ScheduleAssignment) => {
     setEditingAssignment(assignment);
     setAssignmentFormValues({
       weeklyScheduleId: assignment.weeklySchedule ? String(assignment.weeklySchedule.id) : '',
       employeeId: String(assignment.employee.id),
-      positionId: String(assignment.position.id),
+      positionId: assignment.position ? String(assignment.position.id) : '',
       date: assignment.date,
       startTime: formatTime(assignment.startTime),
       endTime: formatTime(assignment.endTime),
       note: assignment.note ?? '',
     });
     setAssignmentFormOpen(true);
+  };
+
+  const handleOpenMovieNote = (date: string) => {
+    const key = `${selectedScheduleId}-${date}`;
+    setMovieNoteDate(date);
+    setMovieNoteValue(movieNotes[key] ?? '');
   };
 
   const handleCloseScheduleForm = () => {
@@ -443,17 +838,12 @@ export default function SchedulePage() {
 
     if (
       !employeeId ||
-      !positionId ||
+      (assignmentPositionRequired && !positionId) ||
       !assignmentFormValues.date ||
       !assignmentFormValues.startTime ||
       !assignmentFormValues.endTime
     ) {
       setError('Employee, position, date, start time, and end time are required.');
-      return;
-    }
-
-    if (assignmentFormValues.startTime >= assignmentFormValues.endTime) {
-      setError('Start time must be before end time.');
       return;
     }
 
@@ -474,7 +864,7 @@ export default function SchedulePage() {
     const payload: ScheduleAssignmentPayload = {
       weeklySchedule: weeklyScheduleId ? { id: weeklyScheduleId } : undefined,
       employee: { id: employeeId },
-      position: { id: positionId },
+      position: assignmentPositionRequired ? { id: positionId } : undefined,
       date: assignmentFormValues.date,
       startTime: assignmentFormValues.startTime,
       endTime: assignmentFormValues.endTime,
@@ -538,6 +928,202 @@ export default function SchedulePage() {
     }
   };
 
+  const handleSaveMovieNote = () => {
+    if (!movieNoteDate || !selectedScheduleId) {
+      return;
+    }
+
+    const key = `${selectedScheduleId}-${movieNoteDate}`;
+    const nextMovieNotes = {
+      ...movieNotes,
+      [key]: movieNoteValue.trim(),
+    };
+
+    if (!nextMovieNotes[key]) {
+      delete nextMovieNotes[key];
+    }
+
+    setMovieNotes(nextMovieNotes);
+    window.localStorage.setItem(movieNotesStorageKey, JSON.stringify(nextMovieNotes));
+    setMovieNoteDate(null);
+    setMovieNoteValue('');
+  };
+
+  const handleAvailabilityImportFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0] ?? null;
+
+    if (selectedFile && !selectedFile.name.toLowerCase().endsWith('.xlsx')) {
+      setAvailabilityImportFile(null);
+      setSnackbar({
+        open: true,
+        message: 'Please select an .xlsx file.',
+        severity: 'error',
+      });
+      event.target.value = '';
+      return;
+    }
+
+    setAvailabilityImportFile(selectedFile);
+  };
+
+  const handleImportAvailabilityExcel = async () => {
+    const weeklyScheduleId = Number(selectedScheduleId);
+
+    if (!weeklyScheduleId) {
+      setSnackbar({
+        open: true,
+        message: 'Please select a weekly schedule.',
+        severity: 'error',
+      });
+      return;
+    }
+
+    if (!availabilityImportFile) {
+      setSnackbar({
+        open: true,
+        message: 'Please select an Excel file.',
+        severity: 'error',
+      });
+      return;
+    }
+
+    setImportingAvailability(true);
+
+    try {
+      const message = await availabilityService.importAvailabilityExcel(
+        availabilityImportFile,
+        weeklyScheduleId,
+      );
+      setSnackbar({
+        open: true,
+        message,
+        severity: 'success',
+      });
+      setAvailabilityImportFile(null);
+      await loadPageData();
+    } catch (importError) {
+      setSnackbar({
+        open: true,
+        message: getErrorMessage(importError),
+        severity: 'error',
+      });
+    } finally {
+      setImportingAvailability(false);
+    }
+  };
+
+  const handleGenerateFixedAssignments = async () => {
+    if (!selectedSchedule) {
+      setSnackbar({
+        open: true,
+        message: 'Please select a weekly schedule.',
+        severity: 'error',
+      });
+      return;
+    }
+
+    setGeneratingFixedAssignments(true);
+
+    try {
+      const message = await scheduleAssignmentService.generateFixedAssignments(
+        selectedSchedule.id,
+        selectedSchedule.weekStartDate,
+        selectedSchedule.weekEndDate,
+      );
+      setSnackbar({
+        open: true,
+        message: message || 'Fixed assignments generated.',
+        severity: 'success',
+      });
+      await loadPageData();
+      await loadMonthlyLeavesForSchedule(selectedSchedule);
+    } catch (generateError) {
+      setSnackbar({
+        open: true,
+        message: getErrorMessage(generateError),
+        severity: 'error',
+      });
+    } finally {
+      setGeneratingFixedAssignments(false);
+    }
+  };
+
+  const exportScheduleImage = async () => {
+    const exportArea = document.getElementById('schedule-export-content');
+
+    if (!exportArea) {
+      setError('Schedule export area was not found.');
+      return;
+    }
+
+    const exportTableContainer = exportArea.querySelector<HTMLElement>(
+      '[data-schedule-export-table-container]',
+    );
+    const exportTable = exportArea.querySelector<HTMLElement>('[data-schedule-export-table]');
+
+    setExportingImage(true);
+    setError(null);
+
+    const previousExportAreaWidth = exportArea.style.width;
+    const previousExportAreaMaxWidth = exportArea.style.maxWidth;
+    const previousTableContainerWidth = exportTableContainer?.style.width ?? '';
+    const previousTableContainerOverflow = exportTableContainer?.style.overflow ?? '';
+    const previousTableWidth = exportTable?.style.width ?? '';
+
+    try {
+      exportArea.style.width = 'max-content';
+      exportArea.style.maxWidth = 'none';
+
+      if (exportTableContainer) {
+        exportTableContainer.style.width = 'max-content';
+        exportTableContainer.style.overflow = 'visible';
+      }
+
+      if (exportTable) {
+        exportTable.style.width = 'max-content';
+      }
+
+      await document.fonts.ready;
+      await new Promise((resolve) => {
+        window.requestAnimationFrame(resolve);
+      });
+
+      const exportWidth = exportArea.scrollWidth;
+      const exportHeight = exportArea.scrollHeight;
+      const canvas = await html2canvas(exportArea, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        width: exportWidth,
+        height: exportHeight,
+        windowWidth: exportWidth,
+        windowHeight: exportHeight,
+      });
+      const imageUrl = canvas.toDataURL('image/png');
+      const downloadLink = document.createElement('a');
+      downloadLink.href = imageUrl;
+      downloadLink.download = `schedule_${formatDateStamp(new Date())}.png`;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    } catch (exportError) {
+      setError(getErrorMessage(exportError));
+    } finally {
+      exportArea.style.width = previousExportAreaWidth;
+      exportArea.style.maxWidth = previousExportAreaMaxWidth;
+
+      if (exportTableContainer) {
+        exportTableContainer.style.width = previousTableContainerWidth;
+        exportTableContainer.style.overflow = previousTableContainerOverflow;
+      }
+
+      if (exportTable) {
+        exportTable.style.width = previousTableWidth;
+      }
+
+      setExportingImage(false);
+    }
+  };
+
   return (
     <Stack spacing={4}>
       <Stack
@@ -567,6 +1153,11 @@ export default function SchedulePage() {
       </Stack>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
+      {staffingCheckError ? (
+        <Alert severity="warning">
+          Staffing check results could not be loaded: {staffingCheckError}
+        </Alert>
+      ) : null}
 
       <Stack spacing={2}>
         <Stack
@@ -602,22 +1193,110 @@ export default function SchedulePage() {
                 ))}
               </Select>
             </FormControl>
+            <TextField
+              label="班表月份"
+              size="small"
+              type="number"
+              value={scheduleMonth}
+              onChange={(event) =>
+                setScheduleMonthOverrides((current) => ({
+                  ...current,
+                  [scheduleMonthKey]: event.target.value,
+                }))
+              }
+              slotProps={{
+                htmlInput: {
+                  min: 1,
+                  max: 12,
+                  inputMode: 'numeric',
+                },
+              }}
+              sx={{ width: { xs: '100%', sm: 120 } }}
+            />
+            <Button
+              variant="outlined"
+              component="label"
+              startIcon={<UploadFileIcon />}
+              disabled={importingAvailability}
+            >
+              選擇 Excel 檔案
+              <input
+                type="file"
+                accept=".xlsx"
+                hidden
+                onChange={handleAvailabilityImportFileChange}
+              />
+            </Button>
+            <Typography color="text.secondary" sx={{ alignSelf: 'center', minWidth: 140 }}>
+              {availabilityImportFile ? availabilityImportFile.name : 'No file selected'}
+            </Typography>
+            <Button
+              variant="contained"
+              onClick={() => void handleImportAvailabilityExcel()}
+              disabled={importingAvailability || !selectedScheduleId || !availabilityImportFile}
+            >
+              {importingAvailability ? '匯入中...' : '匯入假表'}
+            </Button>
+            <Button
+              variant="outlined"
+              onClick={() => void handleGenerateFixedAssignments()}
+              disabled={generatingFixedAssignments || !selectedSchedule}
+            >
+              {generatingFixedAssignments ? '產生中...' : '產生固定班'}
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<DownloadIcon />}
+              onClick={() => void exportScheduleImage()}
+              disabled={loading || exportingImage}
+            >
+              {exportingImage ? '匯出中...' : '匯出圖片'}
+            </Button>
             <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateAssignment}>
               Assign Employee
             </Button>
           </Stack>
         </Stack>
 
-        <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: '100%' }}>
-          <Table
+        <Box
+          id="schedule-export-area"
+          sx={{ width: '100%', maxWidth: '100%', overflowX: 'auto', bgcolor: '#ffffff' }}
+        >
+          <Box id="schedule-export-content" sx={{ width: '100%', bgcolor: '#ffffff' }}>
+            <Typography
+              component="div"
+              sx={{
+                py: 1,
+                textAlign: 'center',
+                fontSize: 20,
+                fontWeight: 700,
+                lineHeight: 1.5,
+                color: 'text.primary',
+              }}
+            >
+              {scheduleTitle}
+            </Typography>
+            <TableContainer
+              component={Paper}
+              variant="outlined"
+              data-schedule-export-table-container
+              sx={{ width: '100%', overflowX: 'auto', bgcolor: '#ffffff' }}
+            >
+              <Table
+            data-schedule-export-table
             size="small"
             sx={{
-              minWidth: 980,
+              width: '100%',
+              minWidth: `calc(${scheduleStickyColumnWidth * 2}px + ${
+                scheduleDates.length || 1
+              } * ${scheduleDateColumnMinWidth}px)`,
               borderCollapse: 'collapse',
               '& th, & td': {
                 borderRight: 1,
                 borderBottom: 1,
                 borderColor: 'divider',
+                px: 1,
+                py: 0.5,
               },
               '& th:last-of-type, & td:last-of-type': {
                 borderRight: 0,
@@ -629,7 +1308,8 @@ export default function SchedulePage() {
                 <TableCell
                   rowSpan={2}
                   sx={{
-                    width: 120,
+                    width: scheduleStickyColumnWidth,
+                    minWidth: scheduleStickyColumnWidth,
                     bgcolor: 'grey.100',
                     fontWeight: 700,
                     position: 'sticky',
@@ -642,11 +1322,12 @@ export default function SchedulePage() {
                 <TableCell
                   rowSpan={2}
                   sx={{
-                    width: 120,
+                    width: scheduleStickyColumnWidth,
+                    minWidth: scheduleStickyColumnWidth,
                     bgcolor: 'grey.100',
                     fontWeight: 700,
                     position: 'sticky',
-                    left: 120,
+                    left: scheduleStickyColumnWidth,
                     zIndex: 3,
                   }}
                 >
@@ -656,7 +1337,12 @@ export default function SchedulePage() {
                   <TableCell
                     key={date}
                     align="center"
-                    sx={{ bgcolor: 'grey.100', fontWeight: 700, minWidth: 150 }}
+                    sx={{
+                      bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
+                      fontWeight: 700,
+                      minWidth: scheduleDateColumnMinWidth,
+                      whiteSpace: 'nowrap',
+                    }}
                   >
                     {formatDateLabel(date)}
                   </TableCell>
@@ -668,7 +1354,7 @@ export default function SchedulePage() {
                     key={date}
                     align="center"
                     sx={{
-                      bgcolor: 'grey.100',
+                      bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
                       color: formatWeekday(date) === '六' || formatWeekday(date) === '日'
                         ? 'error.main'
                         : 'text.secondary',
@@ -681,6 +1367,73 @@ export default function SchedulePage() {
               </TableRow>
             </TableHead>
             <TableBody>
+              {selectedSchedule ? (
+                <TableRow hover>
+                  <TableCell
+                    sx={{
+                      bgcolor: 'background.paper',
+                      position: 'sticky',
+                      left: 0,
+                      zIndex: 2,
+                      whiteSpace: 'nowrap',
+                      fontWeight: 700,
+                    }}
+                  >
+                    Movie
+                  </TableCell>
+                  <TableCell
+                    sx={{
+                      bgcolor: 'background.paper',
+                      position: 'sticky',
+                      left: scheduleStickyColumnWidth,
+                      zIndex: 2,
+                      whiteSpace: 'nowrap',
+                      fontWeight: 700,
+                    }}
+                  >
+                    Notes
+                  </TableCell>
+                  {scheduleDates.map((date) => {
+                    const movieNote = movieNotes[`${selectedScheduleId}-${date}`];
+
+                    return (
+                      <TableCell
+                        key={date}
+                        align="center"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => handleOpenMovieNote(date)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            handleOpenMovieNote(date);
+                          }
+                        }}
+                        sx={{
+                          minWidth: scheduleDateColumnMinWidth,
+                          bgcolor: movieNote ? 'background.paper' : 'grey.50',
+                          cursor: 'pointer',
+                          color: movieNote ? 'error.main' : 'text.disabled',
+                          fontWeight: movieNote ? 700 : 400,
+                          px: 1,
+                          py: 0.5,
+                          '&:hover': {
+                            bgcolor: 'grey.100',
+                          },
+                          '&:focus-visible': {
+                            outline: 2,
+                            outlineColor: 'primary.main',
+                            outlineOffset: -2,
+                          },
+                        }}
+                      >
+                        {movieNote}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              ) : null}
+
               {selectedSchedule && sortedEmployees.map((employee) => (
                 <TableRow key={employee.id} hover>
                   <TableCell
@@ -698,7 +1451,7 @@ export default function SchedulePage() {
                     sx={{
                       bgcolor: 'background.paper',
                       position: 'sticky',
-                      left: 120,
+                      left: scheduleStickyColumnWidth,
                       zIndex: 2,
                       whiteSpace: 'nowrap',
                     }}
@@ -707,6 +1460,7 @@ export default function SchedulePage() {
                   </TableCell>
                   {scheduleDates.map((date) => {
                     const cellAssignments = assignmentGrid.get(`${employee.id}-${date}`) ?? [];
+                    const monthlyLeave = monthlyLeaveGrid.get(`${employee.id}-${date}`);
 
                     return (
                       <TableCell
@@ -714,22 +1468,26 @@ export default function SchedulePage() {
                         align="center"
                         role="button"
                         tabIndex={0}
-                        onClick={() => handleOpenCreateAssignmentForCell(employee, date)}
+                        onClick={() => handleOpenCellActions(employee, date, cellAssignments)}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
-                            handleOpenCreateAssignmentForCell(employee, date);
+                            handleOpenCellActions(employee, date, cellAssignments);
                           }
                         }}
                         sx={{
-                          height: 64,
-                          minWidth: 150,
-                          bgcolor: cellAssignments.length > 0 ? 'background.paper' : 'grey.50',
+                          minWidth: scheduleDateColumnMinWidth,
+                          bgcolor: cellAssignments.length > 0 || monthlyLeave
+                            ? 'background.paper'
+                            : 'grey.50',
                           cursor: 'pointer',
                           transition: 'background-color 120ms ease',
-                          p: 1,
+                          px: 1,
+                          py: 0.5,
                           '&:hover': {
-                            bgcolor: cellAssignments.length > 0 ? 'grey.50' : 'grey.100',
+                            bgcolor: cellAssignments.length > 0 || monthlyLeave
+                              ? 'grey.50'
+                              : 'grey.100',
                           },
                           '&:focus-visible': {
                             outline: 2,
@@ -739,31 +1497,100 @@ export default function SchedulePage() {
                         }}
                       >
                         {cellAssignments.length > 0 ? (
-                          <Stack spacing={0.5}>
-                            {cellAssignments.map((assignment) => (
-                              <Box key={assignment.id}>
-                                <Typography variant="body2" sx={{ lineHeight: 1.35 }}>
-                                  {formatTime(assignment.startTime)}-{formatTime(assignment.endTime)}
-                                </Typography>
-                                <Typography
-                                  variant="body2"
-                                  sx={{ lineHeight: 1.35, fontWeight: 700 }}
+                          <Stack spacing={0.25}>
+                            {cellAssignments.map((assignment) => {
+                              const isOverstaffed = isAssignmentOverstaffed(
+                                assignment,
+                                overstaffingRanges,
+                              );
+                              const positionName = getAssignmentDisplayPositionName(assignment);
+
+                              return (
+                                <Box
+                                  key={assignment.id}
+                                  sx={{
+                                    borderRadius: 1,
+                                    bgcolor: isOverstaffed
+                                      ? overstaffingAssignmentColor
+                                      : 'transparent',
+                                    px: 0.5,
+                                    py: 0,
+                                    '&:hover': {
+                                      bgcolor: isOverstaffed
+                                        ? overstaffingAssignmentColor
+                                        : 'grey.100',
+                                    },
+                                  }}
                                 >
-                                  {positionNameById.get(assignment.position.id) ??
-                                    assignment.position.name}
-                                </Typography>
-                                {assignment.note ? (
-                                  <Typography
-                                    variant="caption"
-                                    color="error.main"
-                                    sx={{ display: 'block', lineHeight: 1.25 }}
+                                  <Stack
+                                    direction="row"
+                                    spacing={0.5}
+                                    sx={{ alignItems: 'flex-start', justifyContent: 'center' }}
                                   >
-                                    {assignment.note}
-                                  </Typography>
-                                ) : null}
-                              </Box>
-                            ))}
+                                    <Box sx={{ minWidth: 0 }}>
+                                      <Typography
+                                        variant="body2"
+                                        sx={{
+                                          lineHeight: 1.35,
+                                          fontSize: 13,
+                                          fontWeight: 700,
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {formatBoardAssignmentText(assignment, positionName)}
+                                      </Typography>
+                                    </Box>
+                                    <Stack
+                                      direction="row"
+                                      spacing={0}
+                                      data-html2canvas-ignore="true"
+                                    >
+                                      <Tooltip title="Edit assignment">
+                                        <IconButton
+                                          aria-label="edit assignment from board"
+                                          size="small"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            handleOpenEditAssignment(assignment);
+                                          }}
+                                          sx={{ p: 0, ml: 0.25 }}
+                                        >
+                                          <EditIcon sx={{ fontSize: 13 }} />
+                                        </IconButton>
+                                      </Tooltip>
+                                      <Tooltip title="Delete assignment">
+                                        <IconButton
+                                          aria-label="delete assignment from board"
+                                          color="error"
+                                          size="small"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            setDeleteAssignmentTarget(assignment);
+                                          }}
+                                          sx={{ p: 0, ml: 0.25 }}
+                                        >
+                                          <DeleteIcon sx={{ fontSize: 13 }} />
+                                        </IconButton>
+                                      </Tooltip>
+                                    </Stack>
+                                  </Stack>
+                                  {assignment.note ? (
+                                    <Typography
+                                      variant="caption"
+                                      color="error.main"
+                                      sx={{ display: 'block', lineHeight: 1.15 }}
+                                    >
+                                      {assignment.note}
+                                    </Typography>
+                                  ) : null}
+                                </Box>
+                              );
+                            })}
                           </Stack>
+                        ) : monthlyLeave ? (
+                          <Typography color="error.main" sx={{ fontWeight: 700 }}>
+                            休
+                          </Typography>
                         ) : (
                           <Typography color="text.disabled">-</Typography>
                         )}
@@ -805,8 +1632,10 @@ export default function SchedulePage() {
                 </TableRow>
               ) : null}
             </TableBody>
-          </Table>
-        </TableContainer>
+              </Table>
+            </TableContainer>
+          </Box>
+        </Box>
       </Stack>
 
       <Stack spacing={2}>
@@ -933,7 +1762,7 @@ export default function SchedulePage() {
                     {employeeNameById.get(assignment.employee.id) ?? assignment.employee.name}
                   </TableCell>
                   <TableCell>
-                    {positionNameById.get(assignment.position.id) ?? assignment.position.name}
+                    {getAssignmentDisplayPositionName(assignment) || '-'}
                   </TableCell>
                   <TableCell>{formatTime(assignment.startTime)}</TableCell>
                   <TableCell>{formatTime(assignment.endTime)}</TableCell>
@@ -1073,23 +1902,30 @@ export default function SchedulePage() {
                     setAssignmentFormValues((current) => ({
                       ...current,
                       employeeId: event.target.value,
+                      positionId: isNoPositionRequiredJobTitle(
+                        employees.find((employee) => String(employee.id) === event.target.value)
+                          ?.jobTitle,
+                      )
+                        ? ''
+                        : current.positionId,
                     }))
                   }
                 >
                   {employees.map((employee) => (
                     <MenuItem key={employee.id} value={String(employee.id)}>
-                      {employee.id} - {employee.name}
+                      {employee.name}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
 
-              <FormControl fullWidth required>
+              <FormControl fullWidth required={assignmentPositionRequired}>
                 <InputLabel id="assignment-position-label">Position</InputLabel>
                 <Select
                   labelId="assignment-position-label"
                   label="Position"
                   value={assignmentFormValues.positionId}
+                  disabled={!assignmentPositionRequired}
                   onChange={(event) =>
                     setAssignmentFormValues((current) => ({
                       ...current,
@@ -1097,9 +1933,12 @@ export default function SchedulePage() {
                     }))
                   }
                 >
+                  {!assignmentPositionRequired ? (
+                    <MenuItem value="">No position required</MenuItem>
+                  ) : null}
                   {positions.map((position) => (
                     <MenuItem key={position.id} value={String(position.id)}>
-                      {position.id} - {position.name}
+                      {position.name}
                     </MenuItem>
                   ))}
                 </Select>
@@ -1114,24 +1953,129 @@ export default function SchedulePage() {
                 fullWidth
                 slotProps={{ inputLabel: { shrink: true } }}
               />
-              <TextField
-                label="Start Time"
-                type="time"
-                value={assignmentFormValues.startTime}
-                onChange={handleAssignmentChange('startTime')}
-                required
-                fullWidth
-                slotProps={{ inputLabel: { shrink: true } }}
-              />
-              <TextField
-                label="End Time"
-                type="time"
-                value={assignmentFormValues.endTime}
-                onChange={handleAssignmentChange('endTime')}
-                required
-                fullWidth
-                slotProps={{ inputLabel: { shrink: true } }}
-              />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                <FormControl fullWidth required>
+                  <InputLabel id="assignment-start-hour-label">Start Hour</InputLabel>
+                  <Select
+                    labelId="assignment-start-hour-label"
+                    label="Start Hour"
+                    value={getTimeHour(assignmentFormValues.startTime)}
+                    onChange={(event) =>
+                      setAssignmentFormValues((current) => ({
+                        ...current,
+                        startTime: buildScheduleTime(
+                          current.startTime,
+                          'hour',
+                          event.target.value,
+                          scheduleStartMinuteOptions,
+                          scheduleStartMinuteOptions[0],
+                        ),
+                      }))
+                    }
+                  >
+                    <MenuItem value="" disabled>
+                      Hour
+                    </MenuItem>
+                    {scheduleHourOptions.map((hour) => (
+                      <MenuItem key={hour} value={hour}>
+                        {hour}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth required>
+                  <InputLabel id="assignment-start-minute-label">Start Minute</InputLabel>
+                  <Select
+                    labelId="assignment-start-minute-label"
+                    label="Start Minute"
+                    value={getTimeMinute(
+                      assignmentFormValues.startTime,
+                      scheduleStartMinuteOptions,
+                    )}
+                    onChange={(event) =>
+                      setAssignmentFormValues((current) => ({
+                        ...current,
+                        startTime: buildScheduleTime(
+                          current.startTime,
+                          'minute',
+                          event.target.value,
+                          scheduleStartMinuteOptions,
+                          scheduleStartMinuteOptions[0],
+                        ),
+                      }))
+                    }
+                  >
+                    <MenuItem value="" disabled>
+                      Minute
+                    </MenuItem>
+                    {scheduleStartMinuteOptions.map((minute) => (
+                      <MenuItem key={minute} value={minute}>
+                        {minute}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Stack>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                <FormControl fullWidth required>
+                  <InputLabel id="assignment-end-hour-label">End Hour</InputLabel>
+                  <Select
+                    labelId="assignment-end-hour-label"
+                    label="End Hour"
+                    value={getTimeHour(assignmentFormValues.endTime)}
+                    onChange={(event) =>
+                      setAssignmentFormValues((current) => ({
+                        ...current,
+                        endTime: buildScheduleTime(
+                          current.endTime,
+                          'hour',
+                          event.target.value,
+                          scheduleEndMinuteOptions,
+                          scheduleEndMinuteOptions[0],
+                        ),
+                      }))
+                    }
+                  >
+                    <MenuItem value="" disabled>
+                      Hour
+                    </MenuItem>
+                    {scheduleHourOptions.map((hour) => (
+                      <MenuItem key={hour} value={hour}>
+                        {hour}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth required>
+                  <InputLabel id="assignment-end-minute-label">End Minute</InputLabel>
+                  <Select
+                    labelId="assignment-end-minute-label"
+                    label="End Minute"
+                    value={getTimeMinute(assignmentFormValues.endTime, scheduleEndMinuteOptions)}
+                    onChange={(event) =>
+                      setAssignmentFormValues((current) => ({
+                        ...current,
+                        endTime: buildScheduleTime(
+                          current.endTime,
+                          'minute',
+                          event.target.value,
+                          scheduleEndMinuteOptions,
+                          scheduleEndMinuteOptions[0],
+                        ),
+                      }))
+                    }
+                  >
+                    <MenuItem value="" disabled>
+                      Minute
+                    </MenuItem>
+                    {scheduleEndMinuteOptions.map((minute) => (
+                      <MenuItem key={minute} value={minute}>
+                        {minute}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Stack>
               <TextField
                 label="Note"
                 value={assignmentFormValues.note}
@@ -1151,6 +2095,106 @@ export default function SchedulePage() {
             </Button>
           </DialogActions>
         </Box>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(cellActionTarget)}
+        onClose={() => setCellActionTarget(null)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>
+          {cellActionTarget
+            ? `${cellActionTarget.employee.name} - ${cellActionTarget.date}`
+            : 'Assignments'}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            {cellActionTarget?.assignments.map((assignment) => (
+              <Paper key={assignment.id} variant="outlined" sx={{ p: 1.5 }}>
+                <Stack
+                  direction={{ xs: 'column', sm: 'row' }}
+                  spacing={1}
+                  sx={{
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <Box>
+                    <Typography sx={{ fontWeight: 700 }}>
+                      {formatTime(assignment.startTime)}-{formatTime(assignment.endTime)}{' '}
+                      {getAssignmentDisplayPositionName(assignment)}
+                    </Typography>
+                    {assignment.note ? (
+                      <Typography color="text.secondary" variant="body2">
+                        {assignment.note}
+                      </Typography>
+                    ) : null}
+                  </Box>
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      size="small"
+                      startIcon={<EditIcon />}
+                      onClick={() => {
+                        handleOpenEditAssignment(assignment);
+                        setCellActionTarget(null);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="small"
+                      color="error"
+                      startIcon={<DeleteIcon />}
+                      onClick={() => {
+                        setDeleteAssignmentTarget(assignment);
+                        setCellActionTarget(null);
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Paper>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCellActionTarget(null)}>Close</Button>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateAssignmentFromCellActions}>
+            Add Assignment
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(movieNoteDate)} onClose={() => setMovieNoteDate(null)} fullWidth maxWidth="sm">
+        <DialogTitle>
+          Movie Notes {movieNoteDate ? `- ${formatDateLabel(movieNoteDate)} ${formatWeekday(movieNoteDate)}` : ''}
+        </DialogTitle>
+        <DialogContent>
+          <TextField
+            label="Movie notes"
+            value={movieNoteValue}
+            onChange={(event) => setMovieNoteValue(event.target.value)}
+            fullWidth
+            multiline
+            minRows={3}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setMovieNoteDate(null);
+              setMovieNoteValue('');
+            }}
+          >
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={handleSaveMovieNote}>
+            Save
+          </Button>
+        </DialogActions>
       </Dialog>
 
       <Dialog
@@ -1206,6 +2250,21 @@ export default function SchedulePage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={5000}
+        onClose={() => setSnackbar((current) => ({ ...current, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          severity={snackbar.severity}
+          variant="filled"
+          onClose={() => setSnackbar((current) => ({ ...current, open: false }))}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Stack>
   );
 }

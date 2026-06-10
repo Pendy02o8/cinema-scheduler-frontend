@@ -2,6 +2,7 @@ import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
 import {
   Alert,
   Box,
@@ -17,6 +18,7 @@ import {
   MenuItem,
   Paper,
   Select,
+  Snackbar,
   Stack,
   Table,
   TableBody,
@@ -32,12 +34,14 @@ import type { ChangeEvent, FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { availabilityService } from '../services/availabilityService';
 import { employeeService } from '../services/employeeService';
+import { weeklyScheduleService } from '../services/weeklyScheduleService';
 import type {
   Availability,
   AvailabilityPayload,
   AvailabilityType,
 } from '../types/availability';
 import type { Employee } from '../types/employee';
+import type { WeeklySchedule } from '../types/weeklySchedule';
 
 type AvailabilityFormValues = {
   employeeId: string;
@@ -45,6 +49,12 @@ type AvailabilityFormValues = {
   availabilityType: AvailabilityType;
   boundaryTime: string;
   note: string;
+};
+
+type SnackbarState = {
+  open: boolean;
+  message: string;
+  severity: 'success' | 'error';
 };
 
 const emptyFormValues: AvailabilityFormValues = {
@@ -55,9 +65,40 @@ const emptyFormValues: AvailabilityFormValues = {
   note: '',
 };
 
-const availabilityTypes: AvailabilityType[] = ['BEFORE', 'AFTER', 'UNAVAILABLE'];
+const availabilityTypes: AvailabilityType[] = ['BEFORE', 'AFTER', 'UNAVAILABLE', 'ALL_DAY'];
+
+const availabilityTypeLabels: Record<AvailabilityType, string> = {
+  BEFORE: 'Before time',
+  AFTER: 'After time',
+  UNAVAILABLE: 'Unavailable',
+  ALL_DAY: 'Available all day',
+};
 
 function getErrorMessage(error: unknown) {
+  if (
+    typeof error === 'object'
+    && error !== null
+    && 'response' in error
+    && typeof error.response === 'object'
+    && error.response !== null
+    && 'data' in error.response
+  ) {
+    const responseData = error.response.data;
+
+    if (typeof responseData === 'string') {
+      return responseData;
+    }
+
+    if (
+      typeof responseData === 'object'
+      && responseData !== null
+      && 'message' in responseData
+      && typeof responseData.message === 'string'
+    ) {
+      return responseData.message;
+    }
+  }
+
   if (error instanceof Error) {
     return error.message;
   }
@@ -73,17 +114,38 @@ function formatTime(time?: string | null) {
   return time.slice(0, 5);
 }
 
+function formatDisplayDate(date: string) {
+  return date.replaceAll('-', '/');
+}
+
+function formatAvailabilityType(type: string) {
+  return availabilityTypeLabels[type as AvailabilityType] ?? type;
+}
+
+function requiresBoundaryTime(type: AvailabilityType) {
+  return type === 'BEFORE' || type === 'AFTER';
+}
+
 export default function AvailabilityPage() {
   const [availability, setAvailability] = useState<Availability[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingAvailability, setEditingAvailability] = useState<Availability | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Availability | null>(null);
   const [formValues, setFormValues] = useState<AvailabilityFormValues>(emptyFormValues);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [importWeeklyScheduleId, setImportWeeklyScheduleId] = useState('');
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [snackbar, setSnackbar] = useState<SnackbarState>({
+    open: false,
+    message: '',
+    severity: 'success',
+  });
 
   const employeeNameById = useMemo(() => {
     return new Map(employees.map((employee) => [employee.id, employee.name]));
@@ -94,14 +156,27 @@ export default function AvailabilityPage() {
     setError(null);
 
     try {
-      const [availabilityData, employeeData] = await Promise.all([
+      const [availabilityData, employeeData, weeklyScheduleData] = await Promise.all([
         selectedEmployeeId
           ? availabilityService.getAvailabilityByEmployee(Number(selectedEmployeeId))
           : availabilityService.getAvailability(),
         employeeService.getEmployees(),
+        weeklyScheduleService.getWeeklySchedules(),
       ]);
       setAvailability(availabilityData);
       setEmployees(employeeData);
+      setWeeklySchedules(weeklyScheduleData);
+      setImportWeeklyScheduleId((currentWeeklyScheduleId) => {
+        const currentScheduleExists = weeklyScheduleData.some(
+          (schedule) => String(schedule.id) === currentWeeklyScheduleId,
+        );
+
+        if (currentScheduleExists) {
+          return currentWeeklyScheduleId;
+        }
+
+        return weeklyScheduleData[0] ? String(weeklyScheduleData[0].id) : '';
+      });
     } catch (loadError) {
       setError(getErrorMessage(loadError));
     } finally {
@@ -159,7 +234,7 @@ export default function AvailabilityPage() {
     event.preventDefault();
 
     const employeeId = Number(formValues.employeeId);
-    const shouldIncludeBoundaryTime = formValues.availabilityType !== 'UNAVAILABLE';
+    const shouldIncludeBoundaryTime = requiresBoundaryTime(formValues.availabilityType);
     const boundaryTime = shouldIncludeBoundaryTime ? formValues.boundaryTime : '';
 
     if (!employeeId || !formValues.date) {
@@ -221,6 +296,66 @@ export default function AvailabilityPage() {
     }
   };
 
+  const handleImportFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0] ?? null;
+
+    if (selectedFile && !selectedFile.name.toLowerCase().endsWith('.xlsx')) {
+      setImportFile(null);
+      setSnackbar({
+        open: true,
+        message: 'Please select an .xlsx file.',
+        severity: 'error',
+      });
+      event.target.value = '';
+      return;
+    }
+
+    setImportFile(selectedFile);
+  };
+
+  const handleImportAvailability = async () => {
+    const weeklyScheduleId = Number(importWeeklyScheduleId);
+
+    if (!weeklyScheduleId) {
+      setSnackbar({
+        open: true,
+        message: 'Please select a weekly schedule.',
+        severity: 'error',
+      });
+      return;
+    }
+
+    if (!importFile) {
+      setSnackbar({
+        open: true,
+        message: 'Please select an Excel file.',
+        severity: 'error',
+      });
+      return;
+    }
+
+    setImporting(true);
+
+    try {
+      const message = await availabilityService.importAvailabilityExcel(importFile, weeklyScheduleId);
+      setSnackbar({
+        open: true,
+        message,
+        severity: 'success',
+      });
+      setImportFile(null);
+      await loadPageData();
+    } catch (importError) {
+      setSnackbar({
+        open: true,
+        message: getErrorMessage(importError),
+        severity: 'error',
+      });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <Stack spacing={3}>
       <Stack
@@ -255,6 +390,72 @@ export default function AvailabilityPage() {
       </Stack>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
+
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h6" component="h3">
+              匯入假表
+            </Typography>
+            <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
+              Upload a Google Form Excel file for the selected weekly schedule.
+            </Typography>
+          </Box>
+
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={2}
+            sx={{ alignItems: { xs: 'stretch', md: 'center' } }}
+          >
+            <FormControl sx={{ minWidth: { xs: '100%', md: 320 } }}>
+              <InputLabel id="availability-import-week-label">Weekly Schedule</InputLabel>
+              <Select
+                labelId="availability-import-week-label"
+                label="Weekly Schedule"
+                value={importWeeklyScheduleId}
+                onChange={(event) => setImportWeeklyScheduleId(event.target.value)}
+              >
+                <MenuItem value="" disabled>
+                  No weekly schedule selected
+                </MenuItem>
+                {weeklySchedules.map((schedule) => (
+                  <MenuItem key={schedule.id} value={String(schedule.id)}>
+                    第{schedule.id}週 {formatDisplayDate(schedule.weekStartDate)} ~{' '}
+                    {formatDisplayDate(schedule.weekEndDate)}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Button
+              variant="outlined"
+              component="label"
+              startIcon={<UploadFileIcon />}
+              disabled={importing}
+            >
+              選擇 Excel 檔案
+              <input
+                type="file"
+                accept=".xlsx"
+                hidden
+                onChange={handleImportFileChange}
+              />
+            </Button>
+
+            <Typography color="text.secondary" sx={{ minWidth: 160 }}>
+              {importFile ? importFile.name : 'No file selected'}
+            </Typography>
+
+            <Button
+              variant="contained"
+              onClick={() => void handleImportAvailability()}
+              disabled={importing || !importWeeklyScheduleId || !importFile}
+            >
+              {importing ? '匯入中...' : '匯入假表'}
+            </Button>
+          </Stack>
+        </Stack>
+      </Paper>
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack
@@ -312,7 +513,11 @@ export default function AvailabilityPage() {
                 </TableCell>
                 <TableCell>{item.date}</TableCell>
                 <TableCell>
-                  <Chip label={item.availabilityType} size="small" variant="outlined" />
+                  <Chip
+                    label={formatAvailabilityType(item.availabilityType)}
+                    size="small"
+                    variant="outlined"
+                  />
                 </TableCell>
                 <TableCell>{formatTime(item.boundaryTime)}</TableCell>
                 <TableCell>{item.note || '-'}</TableCell>
@@ -407,7 +612,7 @@ export default function AvailabilityPage() {
                 >
                   {availabilityTypes.map((type) => (
                     <MenuItem key={type} value={type}>
-                      {type}
+                      {formatAvailabilityType(type)}
                     </MenuItem>
                   ))}
                 </Select>
@@ -418,8 +623,8 @@ export default function AvailabilityPage() {
                 type="time"
                 value={formValues.boundaryTime}
                 onChange={handleTextChange('boundaryTime')}
-                required={formValues.availabilityType !== 'UNAVAILABLE'}
-                disabled={formValues.availabilityType === 'UNAVAILABLE'}
+                required={requiresBoundaryTime(formValues.availabilityType)}
+                disabled={!requiresBoundaryTime(formValues.availabilityType)}
                 fullWidth
                 slotProps={{ inputLabel: { shrink: true } }}
               />
@@ -461,6 +666,21 @@ export default function AvailabilityPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={5000}
+        onClose={() => setSnackbar((current) => ({ ...current, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          severity={snackbar.severity}
+          variant="filled"
+          onClose={() => setSnackbar((current) => ({ ...current, open: false }))}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Stack>
   );
 }

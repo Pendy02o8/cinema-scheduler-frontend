@@ -17,4 +17,8 @@ export const scheduleAssignmentService = {
   deleteScheduleAssignment(id: number) {
     return scheduleAssignmentApi.remove(id);
   },
+
+  generateFixedAssignments(weeklyScheduleId: number, startDate: string, endDate: string) {
+    return scheduleAssignmentApi.generateFixed(weeklyScheduleId, startDate, endDate);
+  },
 };

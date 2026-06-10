@@ -1229,6 +1229,9 @@ export default function SchedulePage() {
 
       const titleClone = sourceTitle.cloneNode(true) as HTMLElement;
       const tableClone = sourceTable.cloneNode(true) as HTMLTableElement;
+      tableClone.querySelectorAll('[data-html2canvas-ignore]').forEach((element) => {
+        element.remove();
+      });
 
       const exportStyle = document.createElement('style');
       exportStyle.textContent = `
@@ -1245,6 +1248,12 @@ export default function SchedulePage() {
         }
         #schedule-export-content-clone [data-schedule-export-table] {
           border-collapse: collapse !important;
+        }
+        #schedule-export-content-clone [data-staffing-highlight="shortage"] {
+          background-color: #f5f5f5 !important;
+        }
+        #schedule-export-content-clone [data-staffing-highlight="overstaffing"] {
+          background-color: transparent !important;
         }
       `;
       exportClone.appendChild(exportStyle);
@@ -1595,6 +1604,7 @@ export default function SchedulePage() {
                   <TableCell
                     key={date}
                     align="center"
+                    data-staffing-highlight={shortageDateSet.has(date) ? 'shortage' : undefined}
                     sx={{
                       bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
                       fontWeight: 700,
@@ -1611,6 +1621,7 @@ export default function SchedulePage() {
                   <TableCell
                     key={date}
                     align="center"
+                    data-staffing-highlight={shortageDateSet.has(date) ? 'shortage' : undefined}
                     sx={{
                       bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
                       color: formatWeekday(date) === '六' || formatWeekday(date) === '日'
@@ -1778,6 +1789,9 @@ export default function SchedulePage() {
                               return (
                                 <Box
                                   key={assignment.id}
+                                  data-staffing-highlight={
+                                    isOverstaffed ? 'overstaffing' : undefined
+                                  }
                                   sx={{
                                     borderRadius: 1,
                                     bgcolor: isOverstaffed
@@ -1926,137 +1940,108 @@ export default function SchedulePage() {
                   </TableCell>
                 </TableRow>
               ) : null}
-            </TableBody>
-              </Table>
-            </TableContainer>
-          </Box>
-        </Box>
 
-        <TableContainer component={Paper} variant="outlined" sx={{ width: '100%', overflowX: 'auto' }}>
-          <Table
-            size="small"
-            sx={{
-              width: '100%',
-              minWidth: `calc(${scheduleStickyColumnWidth}px + ${
-                scheduleDates.length || 1
-              } * ${scheduleDateColumnMinWidth}px)`,
-              tableLayout: 'fixed',
-              borderCollapse: 'collapse',
-              '& th, & td': {
-                borderRight: 1,
-                borderBottom: 1,
-                borderColor: 'divider',
-                px: 1,
-                py: 0.75,
-              },
-              '& th:last-of-type, & td:last-of-type': {
-                borderRight: 0,
-              },
-            }}
-          >
-            <TableHead>
-              <TableRow>
-                <TableCell
-                  align="center"
-                  sx={{
-                    width: scheduleStickyColumnWidth,
-                    minWidth: scheduleStickyColumnWidth,
-                    bgcolor: 'grey.100',
-                    fontWeight: 700,
-                  }}
-                >
-                  排班狀況
-                </TableCell>
-                {scheduleDates.map((date) => (
-                  <TableCell
-                    key={date}
-                    align="center"
-                    sx={{
-                      width: `calc((100% - ${scheduleStickyColumnWidth}px) / ${
-                        scheduleDates.length || 1
-                      })`,
-                      minWidth: scheduleDateColumnMinWidth,
-                      bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
-                      fontWeight: 700,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {formatDateLabel(date)} {formatWeekday(date)}
-                  </TableCell>
-                ))}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              <TableRow>
-                <TableCell
-                  align="center"
-                  sx={{
-                    width: scheduleStickyColumnWidth,
-                    minWidth: scheduleStickyColumnWidth,
-                    fontWeight: 700,
-                    color: 'text.secondary',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  缺人檢查
-                </TableCell>
-                {selectedSchedule ? (
-                  scheduleDates.map((date) => {
-                    const dateResults = understaffingByDate.get(date) ?? [];
-
-                    return (
+              {selectedSchedule ? (
+                <>
+                  <TableRow data-html2canvas-ignore="true">
+                    <TableCell
+                      align="center"
+                      colSpan={2}
+                      sx={{
+                        bgcolor: 'grey.100',
+                        fontWeight: 700,
+                        position: 'sticky',
+                        left: 0,
+                        zIndex: 2,
+                      }}
+                    >
+                      排班狀況
+                    </TableCell>
+                    {scheduleDates.map((date) => (
                       <TableCell
                         key={date}
                         align="center"
                         sx={{
                           minWidth: scheduleDateColumnMinWidth,
-                          width: `calc((100% - ${scheduleStickyColumnWidth}px) / ${
-                            scheduleDates.length || 1
-                          })`,
-                          bgcolor: dateResults.length > 0 ? shortageHeaderColor : 'background.paper',
-                          verticalAlign: 'top',
+                          bgcolor: shortageDateSet.has(date) ? shortageHeaderColor : 'grey.100',
+                          fontWeight: 700,
+                          whiteSpace: 'nowrap',
                         }}
                       >
-                        {dateResults.length > 0 ? (
-                          <Stack spacing={0.5}>
-                            {dateResults.map((result) => (
-                              <Typography
-                                key={result.id}
-                                variant="caption"
-                                color="error.main"
-                                sx={{
-                                  display: 'block',
-                                  fontWeight: 700,
-                                  lineHeight: 1.3,
-                                  whiteSpace: 'normal',
-                                  wordBreak: 'keep-all',
-                                }}
-                              >
-                                {result.position} {result.period}
-                              </Typography>
-                            ))}
-                          </Stack>
-                        ) : (
-                          <Typography variant="caption" color="success.main" sx={{ fontWeight: 700 }}>
-                            已補足
-                          </Typography>
-                        )}
+                        {formatDateLabel(date)} {formatWeekday(date)}
                       </TableCell>
-                    );
-                  })
-                ) : (
-                  <TableCell
-                    align="center"
-                    colSpan={Math.max(scheduleDates.length, 1)}
-                    sx={{ color: 'text.secondary' }}
-                  >
-                    Select or create a weekly schedule to view staffing status.
-                  </TableCell>
-                )}
-              </TableRow>
+                    ))}
+                  </TableRow>
+                  <TableRow data-html2canvas-ignore="true">
+                    <TableCell
+                      align="center"
+                      colSpan={2}
+                      sx={{
+                        bgcolor: 'background.paper',
+                        color: 'text.secondary',
+                        fontWeight: 700,
+                        position: 'sticky',
+                        left: 0,
+                        whiteSpace: 'nowrap',
+                        zIndex: 2,
+                      }}
+                    >
+                      缺人檢查
+                    </TableCell>
+                    {scheduleDates.map((date) => {
+                      const dateResults = understaffingByDate.get(date) ?? [];
+
+                      return (
+                        <TableCell
+                          key={date}
+                          align="center"
+                          sx={{
+                            minWidth: scheduleDateColumnMinWidth,
+                            bgcolor: dateResults.length > 0
+                              ? shortageHeaderColor
+                              : 'background.paper',
+                            verticalAlign: 'top',
+                          }}
+                        >
+                          {dateResults.length > 0 ? (
+                            <Stack spacing={0.5}>
+                              {dateResults.map((result) => (
+                                <Typography
+                                  key={result.id}
+                                  variant="caption"
+                                  color="error.main"
+                                  sx={{
+                                    display: 'block',
+                                    fontWeight: 700,
+                                    lineHeight: 1.3,
+                                    whiteSpace: 'normal',
+                                    wordBreak: 'keep-all',
+                                  }}
+                                >
+                                  {result.position} {result.period}
+                                </Typography>
+                              ))}
+                            </Stack>
+                          ) : (
+                            <Typography
+                              variant="caption"
+                              color="success.main"
+                              sx={{ fontWeight: 700 }}
+                            >
+                              已補足
+                            </Typography>
+                          )}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                </>
+              ) : null}
             </TableBody>
-          </Table>
-        </TableContainer>
+              </Table>
+            </TableContainer>
+          </Box>
+        </Box>
       </Stack>
 
       <Dialog open={scheduleFormOpen} onClose={handleCloseScheduleForm} fullWidth maxWidth="sm">

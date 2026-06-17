@@ -1,5 +1,10 @@
 import httpClient from './httpClient';
-import type { MonthlyLeave, MonthlyLeavePayload } from '../types/monthlyLeave';
+import type {
+  LeaveType,
+  MonthlyLeave,
+  MonthlyLeavePayload,
+  MonthlyLeaveSummary,
+} from '../types/monthlyLeave';
 
 const monthlyLeavePath = '/monthly-leaves';
 
@@ -23,17 +28,29 @@ export const monthlyLeaveApi = {
     return response.data;
   },
 
+  async getSummary(year: number, month: number) {
+    const response = await httpClient.get<MonthlyLeaveSummary[]>(`${monthlyLeavePath}/summary`, {
+      params: { year, month },
+    });
+    return response.data;
+  },
+
   async create(payload: MonthlyLeavePayload) {
     const response = await httpClient.post<MonthlyLeave>(monthlyLeavePath, payload);
     return response.data;
   },
 
-  async createForEmployee(employeeId: number, leaveDate: string) {
+  async createForEmployee(employeeId: number, leaveDate: string, leaveType: LeaveType) {
     const response = await httpClient.post<MonthlyLeave>(monthlyLeavePath, {
-      employee: { id: employeeId },
+      employeeId,
       leaveDate,
-      note: '月休',
+      leaveType,
     });
+    return response.data;
+  },
+
+  async update(id: number, payload: MonthlyLeavePayload) {
+    const response = await httpClient.put<MonthlyLeave>(`${monthlyLeavePath}/${id}`, payload);
     return response.data;
   },
 

@@ -1,11 +1,22 @@
 import httpClient from './httpClient';
 import type {
   ScheduleAssignment,
+  ScheduleAssignmentChange,
   ScheduleAssignmentPayload,
   ScheduleAssignmentValidationResult,
 } from '../types/scheduleAssignment';
 
 const scheduleAssignmentPath = '/schedule-assignments';
+const scheduleAssignmentChangePath = '/schedule-assignment-changes';
+
+function hasValidationWarnings(data: unknown): data is ScheduleAssignmentValidationResult {
+  if (typeof data !== 'object' || data === null || !('warnings' in data)) {
+    return false;
+  }
+
+  const warnings = (data as ScheduleAssignmentValidationResult).warnings;
+  return Array.isArray(warnings) && warnings.length > 0;
+}
 
 export const scheduleAssignmentApi = {
   async getAll() {
@@ -19,11 +30,27 @@ export const scheduleAssignmentApi = {
   },
 
   async validate(payload: ScheduleAssignmentPayload) {
-    const response = await httpClient.post<ScheduleAssignmentValidationResult>(
-      `${scheduleAssignmentPath}/validate`,
-      payload,
-    );
-    return response.data;
+    try {
+      const response = await httpClient.post<ScheduleAssignmentValidationResult>(
+        `${scheduleAssignmentPath}/validate`,
+        payload,
+      );
+      return response.data;
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'response' in error
+        && typeof error.response === 'object'
+        && error.response !== null
+        && 'data' in error.response
+        && hasValidationWarnings(error.response.data)
+      ) {
+        return error.response.data;
+      }
+
+      throw error;
+    }
   },
 
   async update(id: number, payload: ScheduleAssignmentPayload) {
@@ -46,6 +73,13 @@ export const scheduleAssignmentApi = {
         endDate,
       },
     });
+    return response.data;
+  },
+
+  async getScheduleAssignmentChangesByWeeklyScheduleId(weeklyScheduleId: number) {
+    const response = await httpClient.get<ScheduleAssignmentChange[]>(
+      `${scheduleAssignmentChangePath}/weekly-schedule/${weeklyScheduleId}`,
+    );
     return response.data;
   },
 };

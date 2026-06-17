@@ -1,7 +1,9 @@
 import AddIcon from '@mui/icons-material/Add';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
+import PublishIcon from '@mui/icons-material/Publish';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import {
@@ -33,7 +35,7 @@ import {
 } from '@mui/material';
 import html2canvas from 'html2canvas';
 import type { ChangeEvent, FormEvent } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { employeeService } from '../services/employeeService';
 import { availabilityService } from '../services/availabilityService';
 import { monthlyLeaveService } from '../services/monthlyLeaveService';
@@ -41,12 +43,14 @@ import { positionService } from '../services/positionService';
 import { scheduleAssignmentService } from '../services/scheduleAssignmentService';
 import { staffingCheckService } from '../services/staffingCheckService';
 import { weeklyScheduleService } from '../services/weeklyScheduleService';
+import { workHourService } from '../services/workHourService';
 import type { Availability } from '../types/availability';
 import type { Employee } from '../types/employee';
 import type { Position } from '../types/position';
 import type { MonthlyLeave } from '../types/monthlyLeave';
 import type {
   ScheduleAssignment,
+  ScheduleAssignmentChange,
   ScheduleAssignmentPayload,
 } from '../types/scheduleAssignment';
 import type { StaffingCheckResult } from '../types/staffingCheck';
@@ -55,12 +59,17 @@ import type {
   WeeklySchedulePayload,
   WeeklyScheduleStatus,
 } from '../types/weeklySchedule';
+import { getActiveEmployees } from '../utils/employeeFilters';
+import { sortEmployeesBySortOrder } from '../utils/employeeSort';
+import { getLeaveTypeLabel } from '../utils/leaveType';
 
 type WeeklyScheduleFormValues = {
   weekStartDate: string;
   weekEndDate: string;
   status: WeeklyScheduleStatus;
 };
+
+type ScheduleListFilter = 'recent' | 'all';
 
 type AssignmentFormValues = {
   weeklyScheduleId: string;
@@ -84,11 +93,28 @@ type CellActionTarget = {
   assignments: ScheduleAssignment[];
 };
 
+type CopiedAssignment = {
+  positionId: number | null;
+  startTime: string;
+  endTime: string;
+  note?: string | null;
+};
+
+type PendingAssignmentAction = 'create' | 'update' | 'paste';
+
 type OverstaffingRange = {
   date: string;
   position: string;
   startTime: string;
   endTime: string;
+};
+
+type MovieNoteDialogProps = {
+  open: boolean;
+  title: string;
+  initialValue: string;
+  onClose: () => void;
+  onSave: (value: string) => void;
 };
 
 const emptyScheduleFormValues: WeeklyScheduleFormValues = {
@@ -107,8 +133,8 @@ const emptyAssignmentFormValues: AssignmentFormValues = {
   note: '',
 };
 
-const scheduleStatuses: WeeklyScheduleStatus[] = ['DRAFT', 'PUBLISHED', 'ARCHIVED'];
 const movieNotesStorageKey = 'cinema-scheduler-movie-notes';
+const recentWeeklyScheduleCount = 5;
 const scheduleStartMinuteOptions = ['20', '50'];
 const scheduleEndMinuteOptions = ['00', '30'];
 const scheduleHourOptions = Array.from({ length: 24 }, (_, hour) =>
@@ -116,28 +142,17 @@ const scheduleHourOptions = Array.from({ length: 24 }, (_, hour) =>
 );
 const shortageHeaderColor = '#ffd6e0';
 const overstaffingAssignmentColor = '#fff3cd';
+const publishedChangeCellColor = '#ffe5e5';
+const publishedChangeCellHoverColor = '#ffd6d6';
 const restCellColor = '#ffd966';
 const restTextColor = '#d32f2f';
+const restPositionName = '休';
+const noPositionAssignmentPositionNames = ['不指定崗位', '無崗位', '不需崗位', '未指定崗位'];
+const restAssignmentStartTime = '00:00';
+const restAssignmentEndTime = '23:59';
 const scheduleStickyColumnWidth = 96;
+const scheduleWorkHourColumnWidth = 76;
 const scheduleDateColumnMinWidth = 104;
-const jobTitleOrder: Record<string, number> = {
-  副理: 1,
-  會計: 2,
-  主任: 3,
-  早班正職: 4,
-  早班正職人員: 4,
-  組長: 5,
-  總務: 6,
-  放映師: 7,
-  晚班正職: 8,
-  晚班正職人員: 8,
-  正職清潔: 9,
-  晚班清潔: 10,
-  早班工讀生: 11,
-  晚班工讀生: 12,
-};
-const noPositionRequiredJobTitles = ['會計', '早班清潔', '晚班清潔'];
-
 function getErrorMessage(error: unknown) {
   if (
     typeof error === 'object'
@@ -174,16 +189,92 @@ function getSuccessMessage(response: unknown, fallbackMessage: string) {
   return typeof response === 'string' && response.trim() ? response : fallbackMessage;
 }
 
+function getStringArrayProperty(data: unknown, property: string) {
+  if (typeof data !== 'object' || data === null || !(property in data)) {
+    return [];
+  }
+
+  const value = (data as Record<string, unknown>)[property];
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+}
+
+function getAssignmentValidationWarnings(validationResult: unknown) {
+  return getStringArrayProperty(validationResult, 'warnings');
+}
+
+function getAssignmentValidationErrorMessage(validationResult: unknown) {
+  const errors = getStringArrayProperty(validationResult, 'errors');
+
+  if (errors.length > 0) {
+    return errors.join('\n');
+  }
+
+  return null;
+}
+
+function getNormalizedScheduleStatus(status: string) {
+  return status.trim().toUpperCase();
+}
+
 function getStatusColor(status: string) {
-  if (status === 'DRAFT') {
+  const normalizedStatus = getNormalizedScheduleStatus(status);
+
+  if (normalizedStatus === 'DRAFT') {
     return 'warning';
   }
 
-  if (status === 'PUBLISHED') {
+  if (normalizedStatus === 'PUBLISHED') {
     return 'success';
   }
 
   return 'default';
+}
+
+function getScheduleStatusLabel(status: string) {
+  const normalizedStatus = getNormalizedScheduleStatus(status);
+
+  if (normalizedStatus === 'DRAFT') {
+    return '草稿';
+  }
+
+  if (normalizedStatus === 'PUBLISHED') {
+    return '已發布';
+  }
+
+  if (normalizedStatus === 'ARCHIVED') {
+    return '已封存';
+  }
+
+  return status;
+}
+
+function getScheduleAssignmentChangeCellKey(employeeId: number, date: string) {
+  return `${employeeId}-${date}`;
+}
+
+function getEditableScheduleStatuses(status: string) {
+  const normalizedStatus = getNormalizedScheduleStatus(status);
+
+  if (normalizedStatus === 'PUBLISHED') {
+    return ['PUBLISHED', 'DRAFT'] satisfies WeeklyScheduleStatus[];
+  }
+
+  if (normalizedStatus === 'ARCHIVED') {
+    return ['ARCHIVED', 'DRAFT'] satisfies WeeklyScheduleStatus[];
+  }
+
+  return ['DRAFT'] satisfies WeeklyScheduleStatus[];
+}
+
+function buildScheduleAssignmentChangeCellSet(changes: ScheduleAssignmentChange[]) {
+  return new Set(
+    changes.map((change) => getScheduleAssignmentChangeCellKey(change.employee.id, change.date)),
+  );
 }
 
 function formatTime(time?: string | null) {
@@ -227,12 +318,28 @@ function isRestAvailability(availability: Availability) {
   return availabilityType === 'UNAVAILABLE' || availabilityType === 'OFF';
 }
 
-function isNoPositionRequiredJobTitle(jobTitle?: string | null) {
-  return Boolean(jobTitle && noPositionRequiredJobTitles.includes(jobTitle));
+function employeeRequiresPositionAssignment(employee?: Employee | null) {
+  return employee?.requiresPositionAssignment ?? true;
+}
+
+function isPartTimeEmployee(employee: Employee) {
+  return employee.employeeType === 'PART_TIME' || employee.jobTitle.includes('工讀生');
 }
 
 function getAssignmentPositionName(assignment: ScheduleAssignment) {
   return assignment.position?.name ?? '';
+}
+
+function isRestPositionName(positionName?: string | null) {
+  return positionName?.trim() === restPositionName;
+}
+
+function isNoPositionAssignmentPosition(position?: Position | null) {
+  return Boolean(position && noPositionAssignmentPositionNames.includes(position.name.trim()));
+}
+
+function isRestAssignment(assignment: ScheduleAssignment, positionName?: string) {
+  return isRestPositionName(positionName ?? getAssignmentPositionName(assignment));
 }
 
 function getTimeHour(time: string) {
@@ -351,6 +458,51 @@ function getDefaultScheduleMonth(schedule: WeeklySchedule | null) {
   return String(titleDate.getMonth() + 1);
 }
 
+function getLatestWeeklySchedule(schedules: WeeklySchedule[]) {
+  return schedules.reduce<WeeklySchedule | null>((latestSchedule, schedule) => {
+    if (!latestSchedule) {
+      return schedule;
+    }
+
+    const startDateComparison = schedule.weekStartDate.localeCompare(
+      latestSchedule.weekStartDate,
+    );
+
+    if (startDateComparison !== 0) {
+      return startDateComparison > 0 ? schedule : latestSchedule;
+    }
+
+    const endDateComparison = schedule.weekEndDate.localeCompare(latestSchedule.weekEndDate);
+
+    if (endDateComparison !== 0) {
+      return endDateComparison > 0 ? schedule : latestSchedule;
+    }
+
+    return schedule.id > latestSchedule.id ? schedule : latestSchedule;
+  }, null);
+}
+
+function compareWeeklySchedulesByLatest(
+  firstSchedule: WeeklySchedule,
+  secondSchedule: WeeklySchedule,
+) {
+  const startDateComparison = secondSchedule.weekStartDate.localeCompare(
+    firstSchedule.weekStartDate,
+  );
+
+  if (startDateComparison !== 0) {
+    return startDateComparison;
+  }
+
+  const endDateComparison = secondSchedule.weekEndDate.localeCompare(firstSchedule.weekEndDate);
+
+  if (endDateComparison !== 0) {
+    return endDateComparison;
+  }
+
+  return secondSchedule.id - firstSchedule.id;
+}
+
 function getDatesBetween(startDate: string, endDate: string) {
   const dates: string[] = [];
   const currentDate = new Date(`${startDate}T00:00:00`);
@@ -440,15 +592,65 @@ function getStoredMovieNotes() {
   }
 }
 
+function MovieNoteDialog({
+  open,
+  title,
+  initialValue,
+  onClose,
+  onSave,
+}: MovieNoteDialogProps) {
+  const [value, setValue] = useState(initialValue);
+
+  useEffect(() => {
+    if (open) {
+      const timeoutId = window.setTimeout(() => {
+        setValue(initialValue);
+      }, 0);
+
+      return () => {
+        window.clearTimeout(timeoutId);
+      };
+    }
+  }, [initialValue, open]);
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>{title}</DialogTitle>
+      <DialogContent>
+        <TextField
+          label="上映電影"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          fullWidth
+          multiline
+          minRows={3}
+          sx={{ mt: 1 }}
+        />
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>取消</Button>
+        <Button variant="contained" onClick={() => onSave(value)}>
+          儲存
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 export default function SchedulePage() {
+  const staffingCheckRequestIdRef = useRef(0);
+  const workHoursRequestIdRef = useRef(0);
+  const assignmentChangesRequestIdRef = useRef(0);
   const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [assignments, setAssignments] = useState<ScheduleAssignment[]>([]);
   const [monthlyLeaves, setMonthlyLeaves] = useState<MonthlyLeave[]>([]);
   const [availabilityPreview, setAvailabilityPreview] = useState<Availability[]>([]);
+  const [availabilityPreviewRefreshKey, setAvailabilityPreviewRefreshKey] = useState(0);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [exportingImage, setExportingImage] = useState(false);
   const [importingAvailability, setImportingAvailability] = useState(false);
   const [generatingFixedAssignments, setGeneratingFixedAssignments] = useState(false);
@@ -457,11 +659,22 @@ export default function SchedulePage() {
   const [shortageDateSet, setShortageDateSet] = useState<Set<string>>(() => new Set());
   const [understaffingResults, setUnderstaffingResults] = useState<StaffingCheckResult[]>([]);
   const [overstaffingRanges, setOverstaffingRanges] = useState<OverstaffingRange[]>([]);
+  const [scheduleAssignmentChangeCellSet, setScheduleAssignmentChangeCellSet] = useState<
+    Set<string>
+  >(() => new Set());
+  const [weeklyWorkHoursByEmployeeId, setWeeklyWorkHoursByEmployeeId] = useState<
+    Record<number, string>
+  >({});
   const [scheduleFormOpen, setScheduleFormOpen] = useState(false);
   const [assignmentFormOpen, setAssignmentFormOpen] = useState(false);
+  const [publishScheduleTarget, setPublishScheduleTarget] = useState<WeeklySchedule | null>(null);
   const [assignmentWarnings, setAssignmentWarnings] = useState<string[]>([]);
   const [pendingAssignmentPayload, setPendingAssignmentPayload] =
     useState<ScheduleAssignmentPayload | null>(null);
+  const [pendingAssignmentTargetId, setPendingAssignmentTargetId] = useState<number | null>(null);
+  const [pendingAssignmentAction, setPendingAssignmentAction] =
+    useState<PendingAssignmentAction>('create');
+  const [copiedAssignment, setCopiedAssignment] = useState<CopiedAssignment | null>(null);
   const [editingSchedule, setEditingSchedule] = useState<WeeklySchedule | null>(null);
   const [editingAssignment, setEditingAssignment] = useState<ScheduleAssignment | null>(null);
   const [cellActionTarget, setCellActionTarget] = useState<CellActionTarget | null>(null);
@@ -469,10 +682,11 @@ export default function SchedulePage() {
   const [deleteAssignmentTarget, setDeleteAssignmentTarget] =
     useState<ScheduleAssignment | null>(null);
   const [selectedScheduleId, setSelectedScheduleId] = useState('');
+  const [scheduleListFilter, setScheduleListFilter] = useState<ScheduleListFilter>('recent');
   const [scheduleMonthOverrides, setScheduleMonthOverrides] = useState<Record<string, string>>({});
   const [movieNotes, setMovieNotes] = useState<Record<string, string>>(getStoredMovieNotes);
   const [movieNoteDate, setMovieNoteDate] = useState<string | null>(null);
-  const [movieNoteValue, setMovieNoteValue] = useState('');
+  const [assignmentNoteInputKey, setAssignmentNoteInputKey] = useState(0);
   const [availabilityImportFile, setAvailabilityImportFile] = useState<File | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({
     open: false,
@@ -490,6 +704,10 @@ export default function SchedulePage() {
     return new Map(positions.map((position) => [position.id, position.name]));
   }, [positions]);
 
+  const noPositionAssignmentPosition = useMemo(() => {
+    return positions.find(isNoPositionAssignmentPosition) ?? null;
+  }, [positions]);
+
   const getAssignmentDisplayPositionName = useCallback(
     (assignment: ScheduleAssignment) => {
       if (!assignment.position) {
@@ -504,6 +722,21 @@ export default function SchedulePage() {
   const selectedSchedule = useMemo(() => {
     return weeklySchedules.find((schedule) => String(schedule.id) === selectedScheduleId) ?? null;
   }, [selectedScheduleId, weeklySchedules]);
+  const sortedWeeklySchedules = useMemo(() => {
+    return [...weeklySchedules].sort(compareWeeklySchedulesByLatest);
+  }, [weeklySchedules]);
+  const visibleWeeklySchedules = useMemo(() => {
+    if (scheduleListFilter === 'all') {
+      return sortedWeeklySchedules;
+    }
+
+    return sortedWeeklySchedules.slice(0, recentWeeklyScheduleCount);
+  }, [scheduleListFilter, sortedWeeklySchedules]);
+  const selectedScheduleStatus = selectedSchedule
+    ? getNormalizedScheduleStatus(selectedSchedule.status)
+    : '';
+  const selectedScheduleIsDraft = selectedScheduleStatus === 'DRAFT';
+  const selectedScheduleIsPublished = selectedScheduleStatus === 'PUBLISHED';
 
   const scheduleMonthKey = selectedScheduleId || 'default';
   const scheduleMonth =
@@ -515,9 +748,20 @@ export default function SchedulePage() {
       ?? null;
   }, [assignmentFormValues.employeeId, employees]);
 
-  const assignmentPositionRequired = !isNoPositionRequiredJobTitle(
-    selectedAssignmentEmployee?.jobTitle,
-  );
+  const selectedAssignmentPosition = useMemo(() => {
+    return positions.find((position) => String(position.id) === assignmentFormValues.positionId)
+      ?? null;
+  }, [assignmentFormValues.positionId, positions]);
+
+  const assignmentPositionRequired =
+    employeeRequiresPositionAssignment(selectedAssignmentEmployee);
+  const assignmentRestSelected = isRestPositionName(selectedAssignmentPosition?.name);
+  const assignmentTimeRequired = !assignmentRestSelected;
+  const assignmentPositionOptions = assignmentPositionRequired
+    ? positions
+    : positions.filter(
+        (position) => isRestPositionName(position.name) || isNoPositionAssignmentPosition(position),
+      );
 
   const scheduleDates = useMemo(() => {
     if (!selectedSchedule) {
@@ -528,16 +772,7 @@ export default function SchedulePage() {
   }, [selectedSchedule]);
 
   const sortedEmployees = useMemo(() => {
-    return [...employees].sort((firstEmployee, secondEmployee) => {
-      const firstOrder = jobTitleOrder[firstEmployee.jobTitle] ?? 999;
-      const secondOrder = jobTitleOrder[secondEmployee.jobTitle] ?? 999;
-
-      if (firstOrder !== secondOrder) {
-        return firstOrder - secondOrder;
-      }
-
-      return firstEmployee.id - secondEmployee.id;
-    });
+    return sortEmployeesBySortOrder(employees);
   }, [employees]);
 
   const visibleAssignments = useMemo(() => {
@@ -628,7 +863,7 @@ export default function SchedulePage() {
       ]);
       setWeeklySchedules(scheduleData);
       setAssignments(assignmentData);
-      setEmployees(employeeData);
+      setEmployees(getActiveEmployees(employeeData));
       setPositions(positionData);
       setSelectedScheduleId((currentScheduleId) => {
         const currentScheduleExists = scheduleData.some(
@@ -639,14 +874,66 @@ export default function SchedulePage() {
           return currentScheduleId;
         }
 
-        return scheduleData[0] ? String(scheduleData[0].id) : '';
+        const latestSchedule = getLatestWeeklySchedule(scheduleData);
+        return latestSchedule ? String(latestSchedule.id) : '';
       });
+      return scheduleData;
     } catch (loadError) {
       setError(getErrorMessage(loadError));
+      return [];
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const refreshScheduleAssignmentChanges = useCallback(async (schedule: WeeklySchedule | null) => {
+    if (!schedule || getNormalizedScheduleStatus(schedule.status) !== 'PUBLISHED') {
+      assignmentChangesRequestIdRef.current += 1;
+      setScheduleAssignmentChangeCellSet(new Set());
+      return;
+    }
+
+    const requestId = assignmentChangesRequestIdRef.current + 1;
+    assignmentChangesRequestIdRef.current = requestId;
+
+    try {
+      const changes =
+        await scheduleAssignmentService.getScheduleAssignmentChangesByWeeklyScheduleId(schedule.id);
+
+      if (requestId !== assignmentChangesRequestIdRef.current) {
+        return;
+      }
+
+      setScheduleAssignmentChangeCellSet(buildScheduleAssignmentChangeCellSet(changes));
+    } catch (changeLoadError) {
+      if (requestId !== assignmentChangesRequestIdRef.current) {
+        return;
+      }
+
+      setScheduleAssignmentChangeCellSet(new Set());
+      setError(getErrorMessage(changeLoadError));
+    }
+  }, []);
+
+  const refreshAssignments = useCallback(async (scheduleForChanges?: WeeklySchedule | null) => {
+    const assignmentData = await scheduleAssignmentService.getScheduleAssignments();
+    setAssignments(assignmentData);
+    await refreshScheduleAssignmentChanges(scheduleForChanges ?? selectedSchedule);
+  }, [refreshScheduleAssignmentChanges, selectedSchedule]);
+
+  const refreshScheduleDataAfterStatusChange = useCallback(
+    async (updatedSchedule: WeeklySchedule) => {
+      const refreshedSchedules = await loadPageData();
+      const refreshedSchedule =
+        refreshedSchedules.find((schedule) => schedule.id === updatedSchedule.id)
+        ?? updatedSchedule;
+
+      if (String(refreshedSchedule.id) === selectedScheduleId) {
+        await refreshScheduleAssignmentChanges(refreshedSchedule);
+      }
+    },
+    [loadPageData, refreshScheduleAssignmentChanges, selectedScheduleId],
+  );
 
   const loadMonthlyLeavesForSchedule = useCallback(async (schedule: WeeklySchedule | null) => {
     if (!schedule) {
@@ -691,12 +978,16 @@ export default function SchedulePage() {
 
   const fetchStaffingCheckResults = useCallback(async (schedule: WeeklySchedule | null) => {
     if (!schedule) {
+      staffingCheckRequestIdRef.current += 1;
       setShortageDateSet(new Set());
       setUnderstaffingResults([]);
       setOverstaffingRanges([]);
       setStaffingCheckError(null);
       return;
     }
+
+    const requestId = staffingCheckRequestIdRef.current + 1;
+    staffingCheckRequestIdRef.current = requestId;
 
     try {
       const query = {
@@ -712,6 +1003,10 @@ export default function SchedulePage() {
       ]);
       const understaffingResults = dailyUnderstaffingResults.flat();
       const actualUnderstaffingResults = understaffingResults.filter(isActualUnderstaffingResult);
+
+      if (requestId !== staffingCheckRequestIdRef.current) {
+        return;
+      }
 
       setShortageDateSet(
         new Set(
@@ -741,12 +1036,60 @@ export default function SchedulePage() {
       );
       setStaffingCheckError(null);
     } catch (checkError) {
-      setShortageDateSet(new Set());
-      setUnderstaffingResults([]);
-      setOverstaffingRanges([]);
+      if (requestId !== staffingCheckRequestIdRef.current) {
+        return;
+      }
+
       setStaffingCheckError(getErrorMessage(checkError));
     }
   }, []);
+
+  const loadWeeklyWorkHoursForSchedule = useCallback(
+    async (schedule: WeeklySchedule | null, employeeList: Employee[]) => {
+      if (!schedule) {
+        workHoursRequestIdRef.current += 1;
+        setWeeklyWorkHoursByEmployeeId({});
+        return;
+      }
+
+      const partTimeEmployees = employeeList.filter(isPartTimeEmployee);
+
+      if (partTimeEmployees.length === 0) {
+        workHoursRequestIdRef.current += 1;
+        setWeeklyWorkHoursByEmployeeId({});
+        return;
+      }
+
+      const requestId = workHoursRequestIdRef.current + 1;
+      workHoursRequestIdRef.current = requestId;
+
+      try {
+        const query = {
+          startDate: schedule.weekStartDate,
+          endDate: schedule.weekEndDate,
+        };
+        const summaries = await Promise.all(
+          partTimeEmployees.map(async (employee) => {
+            const summary = await workHourService.getEmployeeSummary(employee.id, query);
+            return [employee.id, summary.hours] as const;
+          }),
+        );
+
+        if (requestId !== workHoursRequestIdRef.current) {
+          return;
+        }
+
+        setWeeklyWorkHoursByEmployeeId(Object.fromEntries(summaries));
+      } catch {
+        if (requestId !== workHoursRequestIdRef.current) {
+          return;
+        }
+
+        setWeeklyWorkHoursByEmployeeId({});
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -760,9 +1103,38 @@ export default function SchedulePage() {
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      void fetchStaffingCheckResults(selectedSchedule);
       void loadMonthlyLeavesForSchedule(selectedSchedule);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [loadMonthlyLeavesForSchedule, selectedSchedule]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
       void loadAvailabilityPreviewForSchedule(selectedSchedule);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [availabilityPreviewRefreshKey, loadAvailabilityPreviewForSchedule, selectedSchedule]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void refreshScheduleAssignmentChanges(selectedSchedule);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [refreshScheduleAssignmentChanges, selectedSchedule]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void fetchStaffingCheckResults(selectedSchedule);
+      void loadWeeklyWorkHoursForSchedule(selectedSchedule, employees);
     }, 0);
 
     return () => {
@@ -771,8 +1143,8 @@ export default function SchedulePage() {
   }, [
     assignments,
     fetchStaffingCheckResults,
-    loadAvailabilityPreviewForSchedule,
-    loadMonthlyLeavesForSchedule,
+    employees,
+    loadWeeklyWorkHoursForSchedule,
     selectedSchedule,
   ]);
 
@@ -792,28 +1164,19 @@ export default function SchedulePage() {
     setScheduleFormOpen(true);
   };
 
-  const handleOpenCreateAssignment = () => {
-    setEditingAssignment(null);
-    setAssignmentWarnings([]);
-    setPendingAssignmentPayload(null);
-    setAssignmentFormValues({
-      ...emptyAssignmentFormValues,
-      weeklyScheduleId: selectedScheduleId,
-      date: selectedSchedule?.weekStartDate ?? '',
-    });
-    setAssignmentFormOpen(true);
-  };
-
   const handleOpenCreateAssignmentForCell = (employee: Employee, date: string) => {
     setEditingAssignment(null);
     setAssignmentWarnings([]);
     setPendingAssignmentPayload(null);
+    setPendingAssignmentTargetId(null);
+    setPendingAssignmentAction('create');
     setAssignmentFormValues({
       ...emptyAssignmentFormValues,
       weeklyScheduleId: selectedScheduleId,
       employeeId: String(employee.id),
       date,
     });
+    setAssignmentNoteInputKey((current) => current + 1);
     setAssignmentFormOpen(true);
   };
 
@@ -847,6 +1210,8 @@ export default function SchedulePage() {
     setEditingAssignment(assignment);
     setAssignmentWarnings([]);
     setPendingAssignmentPayload(null);
+    setPendingAssignmentTargetId(null);
+    setPendingAssignmentAction('create');
     setAssignmentFormValues({
       weeklyScheduleId: assignment.weeklySchedule ? String(assignment.weeklySchedule.id) : '',
       employeeId: String(assignment.employee.id),
@@ -856,13 +1221,12 @@ export default function SchedulePage() {
       endTime: formatTime(assignment.endTime),
       note: assignment.note ?? '',
     });
+    setAssignmentNoteInputKey((current) => current + 1);
     setAssignmentFormOpen(true);
   };
 
   const handleOpenMovieNote = (date: string) => {
-    const key = `${selectedScheduleId}-${date}`;
     setMovieNoteDate(date);
-    setMovieNoteValue(movieNotes[key] ?? '');
   };
 
   const handleCloseScheduleForm = () => {
@@ -876,6 +1240,8 @@ export default function SchedulePage() {
       setAssignmentFormOpen(false);
       setAssignmentWarnings([]);
       setPendingAssignmentPayload(null);
+      setPendingAssignmentTargetId(null);
+      setPendingAssignmentAction('create');
     }
   };
 
@@ -889,7 +1255,7 @@ export default function SchedulePage() {
     };
 
   const handleAssignmentChange =
-    (field: keyof Pick<AssignmentFormValues, 'date' | 'startTime' | 'endTime' | 'note'>) =>
+    (field: keyof Pick<AssignmentFormValues, 'date' | 'startTime' | 'endTime'>) =>
     (event: ChangeEvent<HTMLInputElement>) => {
       setAssignmentFormValues((current) => ({
         ...current,
@@ -907,12 +1273,12 @@ export default function SchedulePage() {
     };
 
     if (!payload.weekStartDate || !payload.weekEndDate) {
-      setError('Start date and end date are required.');
+      setError('開始日期與結束日期為必填。');
       return;
     }
 
     if (payload.weekStartDate > payload.weekEndDate) {
-      setError('Start date cannot be after end date.');
+      setError('開始日期不能晚於結束日期。');
       return;
     }
 
@@ -920,14 +1286,32 @@ export default function SchedulePage() {
     setError(null);
 
     try {
-      if (editingSchedule) {
-        await weeklyScheduleService.updateWeeklySchedule(editingSchedule.id, payload);
-      } else {
-        await weeklyScheduleService.createWeeklySchedule(payload);
+      const savedSchedule = editingSchedule
+        ? await weeklyScheduleService.updateWeeklySchedule(editingSchedule.id, payload)
+        : await weeklyScheduleService.createWeeklySchedule(payload);
+
+      setWeeklySchedules((currentSchedules) => {
+        const scheduleExists = currentSchedules.some((schedule) => schedule.id === savedSchedule.id);
+
+        if (!scheduleExists) {
+          return [...currentSchedules, savedSchedule];
+        }
+
+        return currentSchedules.map((schedule) =>
+          schedule.id === savedSchedule.id ? savedSchedule : schedule,
+        );
+      });
+
+      if (String(savedSchedule.id) === selectedScheduleId) {
+        await refreshScheduleAssignmentChanges(savedSchedule);
       }
 
       setScheduleFormOpen(false);
-      await loadPageData();
+      if (editingSchedule) {
+        await refreshScheduleDataAfterStatusChange(savedSchedule);
+      } else {
+        await loadPageData();
+      }
     } catch (saveError) {
       setError(getErrorMessage(saveError));
     } finally {
@@ -935,29 +1319,134 @@ export default function SchedulePage() {
     }
   };
 
-  const createAssignment = async (payload: ScheduleAssignmentPayload) => {
+  const handleConfirmPublishSchedule = async () => {
+    if (!publishScheduleTarget) {
+      return;
+    }
+
+    setPublishing(true);
+    setError(null);
+
+    try {
+      const publishedSchedule = await weeklyScheduleService.publishWeeklySchedule(
+        publishScheduleTarget,
+      );
+
+      setWeeklySchedules((currentSchedules) =>
+        currentSchedules.map((schedule) =>
+          schedule.id === publishedSchedule.id ? publishedSchedule : schedule,
+        ),
+      );
+      setPublishScheduleTarget(null);
+      setSnackbar({
+        open: true,
+        message: '班表發布成功',
+        severity: 'success',
+      });
+      await refreshScheduleDataAfterStatusChange(publishedSchedule);
+    } catch (publishError) {
+      setError(getErrorMessage(publishError));
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const createAssignment = async (payload: ScheduleAssignmentPayload, successMessage?: string) => {
     await scheduleAssignmentService.createScheduleAssignment(payload);
     setAssignmentFormOpen(false);
+    setCellActionTarget(null);
     setAssignmentWarnings([]);
     setPendingAssignmentPayload(null);
-    await loadPageData();
+    setPendingAssignmentTargetId(null);
+    setPendingAssignmentAction('create');
+    if (successMessage) {
+      setSnackbar({
+        open: true,
+        message: successMessage,
+        severity: 'success',
+      });
+    }
+    await refreshAssignments(selectedSchedule);
+  };
+
+  const updateAssignment = async (
+    assignmentId: number,
+    payload: ScheduleAssignmentPayload,
+    successMessage?: string,
+  ) => {
+    await scheduleAssignmentService.updateScheduleAssignment(assignmentId, payload);
+    setAssignmentFormOpen(false);
+    setCellActionTarget(null);
+    setAssignmentWarnings([]);
+    setPendingAssignmentPayload(null);
+    setPendingAssignmentTargetId(null);
+    setPendingAssignmentAction('create');
+    if (successMessage) {
+      setSnackbar({
+        open: true,
+        message: successMessage,
+        severity: 'success',
+      });
+    }
+    await refreshAssignments(selectedSchedule);
+  };
+
+  const saveAssignmentAfterValidation = async (
+    payload: ScheduleAssignmentPayload,
+    action: PendingAssignmentAction,
+    assignmentId: number | null,
+    successMessage?: string,
+  ) => {
+    const validationResult = await scheduleAssignmentService.validateScheduleAssignment(payload);
+    const validationErrorMessage = getAssignmentValidationErrorMessage(validationResult);
+
+    if (validationErrorMessage) {
+      throw new Error(validationErrorMessage);
+    }
+
+    const warnings = getAssignmentValidationWarnings(validationResult);
+
+    if (warnings.length > 0) {
+      setAssignmentWarnings(warnings);
+      setPendingAssignmentPayload(payload);
+      setPendingAssignmentTargetId(assignmentId);
+      setPendingAssignmentAction(action);
+      return;
+    }
+
+    if (assignmentId !== null) {
+      await updateAssignment(assignmentId, payload, successMessage);
+      return;
+    }
+
+    await createAssignment(payload, successMessage);
   };
 
   const handleSubmitAssignment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
+    const formData = new FormData(event.currentTarget);
+    const note = String(formData.get('note') ?? '').trim();
     const employeeId = Number(assignmentFormValues.employeeId);
     const positionId = Number(assignmentFormValues.positionId);
     const weeklyScheduleId = Number(assignmentFormValues.weeklyScheduleId);
+    const payloadPositionId = positionId || (
+      assignmentPositionRequired ? 0 : noPositionAssignmentPosition?.id ?? 0
+    );
+    const startTime = assignmentRestSelected
+      ? restAssignmentStartTime
+      : assignmentFormValues.startTime;
+    const endTime = assignmentRestSelected
+      ? restAssignmentEndTime
+      : assignmentFormValues.endTime;
 
     if (
       !employeeId ||
       (assignmentPositionRequired && !positionId) ||
       !assignmentFormValues.date ||
-      !assignmentFormValues.startTime ||
-      !assignmentFormValues.endTime
+      (assignmentTimeRequired && (!assignmentFormValues.startTime || !assignmentFormValues.endTime))
     ) {
-      setError('Employee, position, date, start time, and end time are required.');
+      setError('員工、崗位、日期、開始時間與結束時間為必填。');
       return;
     }
 
@@ -967,22 +1456,22 @@ export default function SchedulePage() {
         editingAssignment?.id ?? null,
         employeeId,
         assignmentFormValues.date,
-        assignmentFormValues.startTime,
-        assignmentFormValues.endTime,
+        startTime,
+        endTime,
       )
     ) {
-      setError('Scheduling conflict: this employee already has an overlapping shift.');
+      setError('排班衝突：此員工已有重疊班段。');
       return;
     }
 
     const payload: ScheduleAssignmentPayload = {
       weeklySchedule: weeklyScheduleId ? { id: weeklyScheduleId } : undefined,
       employee: { id: employeeId },
-      position: assignmentPositionRequired ? { id: positionId } : undefined,
+      position: payloadPositionId ? { id: payloadPositionId } : undefined,
       date: assignmentFormValues.date,
-      startTime: assignmentFormValues.startTime,
-      endTime: assignmentFormValues.endTime,
-      note: assignmentFormValues.note.trim(),
+      startTime,
+      endTime,
+      note,
     };
 
     setSaving(true);
@@ -990,19 +1479,9 @@ export default function SchedulePage() {
 
     try {
       if (editingAssignment) {
-        await scheduleAssignmentService.updateScheduleAssignment(editingAssignment.id, payload);
-        setAssignmentFormOpen(false);
-        await loadPageData();
+        await saveAssignmentAfterValidation(payload, 'update', editingAssignment.id);
       } else {
-        const validationResult = await scheduleAssignmentService.validateScheduleAssignment(payload);
-
-        if (validationResult.warnings.length > 0) {
-          setAssignmentWarnings(validationResult.warnings);
-          setPendingAssignmentPayload(payload);
-          return;
-        }
-
-        await createAssignment(payload);
+        await saveAssignmentAfterValidation(payload, 'create', null);
       }
     } catch (saveError) {
       setError(getErrorMessage(saveError));
@@ -1015,6 +1494,8 @@ export default function SchedulePage() {
     if (!saving) {
       setAssignmentWarnings([]);
       setPendingAssignmentPayload(null);
+      setPendingAssignmentTargetId(null);
+      setPendingAssignmentAction('create');
     }
   };
 
@@ -1027,9 +1508,82 @@ export default function SchedulePage() {
     setError(null);
 
     try {
-      await createAssignment(pendingAssignmentPayload);
+      const successMessage = pendingAssignmentAction === 'paste' ? '貼上成功' : undefined;
+
+      if (pendingAssignmentTargetId !== null) {
+        await updateAssignment(pendingAssignmentTargetId, pendingAssignmentPayload, successMessage);
+      } else {
+        await createAssignment(pendingAssignmentPayload, successMessage);
+      }
     } catch (saveError) {
       setError(getErrorMessage(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCopyAssignment = (assignment: ScheduleAssignment) => {
+    setCopiedAssignment({
+      positionId: assignment.position?.id ?? null,
+      startTime: formatTime(assignment.startTime),
+      endTime: formatTime(assignment.endTime),
+      note: assignment.note ?? '',
+    });
+    setSnackbar({
+      open: true,
+      message: '已複製排班',
+      severity: 'success',
+    });
+  };
+
+  const handlePasteAssignment = async (targetEmployeeId: number, targetDate: string) => {
+    if (!copiedAssignment || !selectedSchedule) {
+      return;
+    }
+
+    const targetEmployee = employees.find((employee) => employee.id === targetEmployeeId);
+    const targetPositionRequired = employeeRequiresPositionAssignment(targetEmployee);
+    const targetAssignments = assignmentGrid.get(`${targetEmployeeId}-${targetDate}`) ?? [];
+    const targetAssignmentId = targetAssignments[0]?.id ?? null;
+    const payloadPositionId = copiedAssignment.positionId
+      || (targetPositionRequired ? 0 : noPositionAssignmentPosition?.id ?? 0);
+
+    if (targetPositionRequired && !copiedAssignment.positionId) {
+      setError('需要崗位的員工無法貼上未指定崗位的排班。');
+      return;
+    }
+
+    if (
+      hasAssignmentConflict(
+        assignments,
+        targetAssignmentId,
+        targetEmployeeId,
+        targetDate,
+        copiedAssignment.startTime,
+        copiedAssignment.endTime,
+      )
+    ) {
+      setError('排班衝突：此員工已有重疊班段。');
+      return;
+    }
+
+    const payload: ScheduleAssignmentPayload = {
+      weeklySchedule: { id: selectedSchedule.id },
+      employee: { id: targetEmployeeId },
+      position: payloadPositionId ? { id: payloadPositionId } : undefined,
+      date: targetDate,
+      startTime: copiedAssignment.startTime,
+      endTime: copiedAssignment.endTime,
+      note: copiedAssignment.note ?? '',
+    };
+
+    setSaving(true);
+    setError(null);
+
+    try {
+      await saveAssignmentAfterValidation(payload, 'paste', targetAssignmentId, '貼上成功');
+    } catch (pasteError) {
+      setError(getErrorMessage(pasteError));
     } finally {
       setSaving(false);
     }
@@ -1065,7 +1619,7 @@ export default function SchedulePage() {
     try {
       await scheduleAssignmentService.deleteScheduleAssignment(deleteAssignmentTarget.id);
       setDeleteAssignmentTarget(null);
-      await loadPageData();
+      await refreshAssignments(selectedSchedule);
     } catch (deleteError) {
       setError(getErrorMessage(deleteError));
     } finally {
@@ -1073,7 +1627,7 @@ export default function SchedulePage() {
     }
   };
 
-  const handleSaveMovieNote = () => {
+  const handleSaveMovieNote = (value: string) => {
     if (!movieNoteDate || !selectedScheduleId) {
       return;
     }
@@ -1081,7 +1635,7 @@ export default function SchedulePage() {
     const key = `${selectedScheduleId}-${movieNoteDate}`;
     const nextMovieNotes = {
       ...movieNotes,
-      [key]: movieNoteValue.trim(),
+      [key]: value.trim(),
     };
 
     if (!nextMovieNotes[key]) {
@@ -1091,7 +1645,6 @@ export default function SchedulePage() {
     setMovieNotes(nextMovieNotes);
     window.localStorage.setItem(movieNotesStorageKey, JSON.stringify(nextMovieNotes));
     setMovieNoteDate(null);
-    setMovieNoteValue('');
   };
 
   const handleAvailabilityImportFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -1101,7 +1654,7 @@ export default function SchedulePage() {
       setAvailabilityImportFile(null);
       setSnackbar({
         open: true,
-        message: 'Please select an .xlsx file.',
+        message: '請選擇 .xlsx 檔案。',
         severity: 'error',
       });
       event.target.value = '';
@@ -1117,7 +1670,7 @@ export default function SchedulePage() {
     if (!weeklyScheduleId) {
       setSnackbar({
         open: true,
-        message: 'Please select a weekly schedule.',
+        message: '請選擇週排班。',
         severity: 'error',
       });
       return;
@@ -1126,7 +1679,7 @@ export default function SchedulePage() {
     if (!availabilityImportFile) {
       setSnackbar({
         open: true,
-        message: 'Please select an Excel file.',
+        message: '請選擇 Excel 檔案。',
         severity: 'error',
       });
       return;
@@ -1145,7 +1698,7 @@ export default function SchedulePage() {
         severity: 'success',
       });
       setAvailabilityImportFile(null);
-      await loadPageData();
+      setAvailabilityPreviewRefreshKey((current) => current + 1);
     } catch (importError) {
       setSnackbar({
         open: true,
@@ -1161,7 +1714,7 @@ export default function SchedulePage() {
     if (!selectedSchedule) {
       setSnackbar({
         open: true,
-        message: 'Please select a weekly schedule.',
+        message: '請選擇週排班。',
         severity: 'error',
       });
       return;
@@ -1180,10 +1733,7 @@ export default function SchedulePage() {
         message: getSuccessMessage(message, 'Fixed assignments generated.'),
         severity: 'success',
       });
-      await loadPageData();
-      await loadMonthlyLeavesForSchedule(selectedSchedule);
-      await loadAvailabilityPreviewForSchedule(selectedSchedule);
-      await fetchStaffingCheckResults(selectedSchedule);
+      await refreshAssignments(selectedSchedule);
     } catch (generateError) {
       setSnackbar({
         open: true,
@@ -1199,7 +1749,7 @@ export default function SchedulePage() {
     const sourceExportArea = document.getElementById('schedule-export-content');
 
     if (!sourceExportArea) {
-      setError('Schedule export area was not found.');
+      setError('找不到班表匯出區域。');
       return;
     }
 
@@ -1207,7 +1757,7 @@ export default function SchedulePage() {
     const sourceTable = sourceExportArea.querySelector<HTMLTableElement>('[data-schedule-export-table]');
 
     if (!sourceTitle || !sourceTable) {
-      setError('Schedule export content was not found.');
+      setError('找不到班表匯出內容。');
       return;
     }
 
@@ -1232,6 +1782,7 @@ export default function SchedulePage() {
       tableClone.querySelectorAll('[data-html2canvas-ignore]').forEach((element) => {
         element.remove();
       });
+      tableClone.style.minWidth = '0';
 
       const exportStyle = document.createElement('style');
       exportStyle.textContent = `
@@ -1248,6 +1799,7 @@ export default function SchedulePage() {
         }
         #schedule-export-content-clone [data-schedule-export-table] {
           border-collapse: collapse !important;
+          min-width: 0 !important;
         }
         #schedule-export-content-clone [data-staffing-highlight="shortage"] {
           background-color: #f5f5f5 !important;
@@ -1304,8 +1856,29 @@ export default function SchedulePage() {
     }
   };
 
+  const copiedAssignmentPositionName = copiedAssignment?.positionId
+    ? positionNameById.get(copiedAssignment.positionId) ?? ''
+    : '';
+  const copiedAssignmentText = copiedAssignment
+    ? isRestPositionName(copiedAssignmentPositionName)
+      ? restPositionName
+      : `${copiedAssignment.startTime}-${copiedAssignment.endTime}${
+          copiedAssignmentPositionName ? `／${copiedAssignmentPositionName}` : ''
+        }`
+    : '';
+
   return (
-    <Stack spacing={4}>
+    <Stack
+      spacing={4}
+      onContextMenu={(event) => {
+        if (!copiedAssignment) {
+          return;
+        }
+
+        event.preventDefault();
+        setCopiedAssignment(null);
+      }}
+    >
       <Stack
         direction={{ xs: 'column', sm: 'row' }}
         spacing={2}
@@ -1316,14 +1889,14 @@ export default function SchedulePage() {
       >
         <Box>
           <Typography variant="h4" component="h2">
-            Weekly Schedule Management
+            週排班管理
           </Typography>
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            Manage schedule weeks and assign employees to cinema positions.
+            管理週排班、員工班別與影城崗位安排。
           </Typography>
         </Box>
 
-        <Tooltip title="Refresh schedules">
+        <Tooltip title="重新整理班表">
           <span>
             <IconButton onClick={loadPageData} disabled={loading || saving}>
               <RefreshIcon />
@@ -1332,12 +1905,14 @@ export default function SchedulePage() {
         </Tooltip>
       </Stack>
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {staffingCheckError ? (
-        <Alert severity="warning">
-          Staffing check results could not be loaded: {staffingCheckError}
-        </Alert>
-      ) : null}
+      <Stack spacing={1} sx={{ minHeight: 52, justifyContent: 'center' }}>
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {staffingCheckError ? (
+          <Alert severity="warning">
+            Staffing check results could not be loaded: {staffingCheckError}
+          </Alert>
+        ) : null}
+      </Stack>
 
       <Stack spacing={2}>
         <Stack
@@ -1348,11 +1923,27 @@ export default function SchedulePage() {
             justifyContent: 'space-between',
           }}
         >
-          <Typography variant="h5" component="h3">
-            Weekly Schedules
-          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ alignItems: { xs: 'stretch', sm: 'center' } }}>
+            <Typography variant="h5" component="h3">
+              週排管理
+            </Typography>
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel id="schedule-list-filter-label">顯示範圍</InputLabel>
+              <Select
+                labelId="schedule-list-filter-label"
+                label="顯示範圍"
+                value={scheduleListFilter}
+                onChange={(event) =>
+                  setScheduleListFilter(event.target.value as ScheduleListFilter)
+                }
+              >
+                <MenuItem value="recent">最近五週班表</MenuItem>
+                <MenuItem value="all">所有班表</MenuItem>
+              </Select>
+            </FormControl>
+          </Stack>
           <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateSchedule}>
-            Add Week
+            新增週排
           </Button>
         </Stack>
 
@@ -1360,29 +1951,29 @@ export default function SchedulePage() {
           <Table>
             <TableHead>
               <TableRow>
-                <TableCell>ID</TableCell>
-                <TableCell>Start Date</TableCell>
-                <TableCell>End Date</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell align="right">Actions</TableCell>
+                <TableCell>編號</TableCell>
+                <TableCell>開始日期</TableCell>
+                <TableCell>結束日期</TableCell>
+                <TableCell>狀態</TableCell>
+                <TableCell align="right">操作</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {weeklySchedules.map((schedule) => (
+              {visibleWeeklySchedules.map((schedule, scheduleIndex) => (
                 <TableRow key={schedule.id} hover>
-                  <TableCell>{schedule.id}</TableCell>
+                  <TableCell>{scheduleIndex + 1}</TableCell>
                   <TableCell>{schedule.weekStartDate}</TableCell>
                   <TableCell>{schedule.weekEndDate}</TableCell>
                   <TableCell>
                     <Chip
-                      label={schedule.status}
+                      label={getScheduleStatusLabel(schedule.status)}
                       color={getStatusColor(schedule.status)}
                       size="small"
                       variant={schedule.status === 'DRAFT' ? 'outlined' : 'filled'}
                     />
                   </TableCell>
                   <TableCell align="right">
-                    <Tooltip title="Edit weekly schedule">
+                    <Tooltip title="編輯週排班">
                       <IconButton
                         aria-label="edit weekly schedule"
                         onClick={() => handleOpenEditSchedule(schedule)}
@@ -1390,7 +1981,7 @@ export default function SchedulePage() {
                         <EditIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
-                    <Tooltip title="Delete weekly schedule">
+                    <Tooltip title="刪除週排班">
                       <IconButton
                         aria-label="delete weekly schedule"
                         color="error"
@@ -1406,7 +1997,7 @@ export default function SchedulePage() {
               {!loading && weeklySchedules.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    No weekly schedules found.
+                    目前沒有週排班資料。
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -1414,7 +2005,7 @@ export default function SchedulePage() {
               {loading ? (
                 <TableRow>
                   <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    Loading weekly schedules...
+                    載入週排班中...
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -1432,95 +2023,141 @@ export default function SchedulePage() {
             justifyContent: 'space-between',
           }}
         >
-          <Box>
-            <Typography variant="h5" component="h3">
-              Schedule Board
-            </Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              View assignments by employee and date.
-            </Typography>
-          </Box>
+          <Stack
+            direction={{ xs: 'column', lg: 'row' }}
+            spacing={3}
+            sx={{ alignItems: { xs: 'stretch', lg: 'center' } }}
+          >
+            <Box>
+              <Typography variant="h5" component="h3">
+                班表
+              </Typography>
+              {selectedSchedule ? (
+                <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mt: 0.75 }}>
+                  <Typography color="text.secondary" variant="body2">
+                    目前狀態
+                  </Typography>
+                  <Chip
+                    label={getScheduleStatusLabel(selectedSchedule.status)}
+                    color={getStatusColor(selectedSchedule.status)}
+                    size="small"
+                    variant={selectedScheduleIsDraft ? 'outlined' : 'filled'}
+                  />
+                </Stack>
+              ) : null}
+            </Box>
 
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-            <FormControl sx={{ minWidth: { xs: '100%', sm: 280 } }}>
-              <InputLabel id="schedule-board-week-label">Week</InputLabel>
-              <Select
-                labelId="schedule-board-week-label"
-                label="Week"
-                value={selectedScheduleId}
-                onChange={(event) => setSelectedScheduleId(event.target.value)}
-              >
-                {weeklySchedules.map((schedule) => (
-                  <MenuItem key={schedule.id} value={String(schedule.id)}>
-                    {schedule.weekStartDate} to {schedule.weekEndDate}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <TextField
-              label="班表月份"
-              size="small"
-              type="number"
-              value={scheduleMonth}
-              onChange={(event) =>
-                setScheduleMonthOverrides((current) => ({
-                  ...current,
-                  [scheduleMonthKey]: event.target.value,
-                }))
-              }
-              slotProps={{
-                htmlInput: {
-                  min: 1,
-                  max: 12,
-                  inputMode: 'numeric',
-                },
-              }}
-              sx={{ width: { xs: '100%', sm: 120 } }}
-            />
-            <Button
-              variant="outlined"
-              component="label"
-              startIcon={<UploadFileIcon />}
-              disabled={importingAvailability}
-            >
-              選擇 Excel 檔案
-              <input
-                type="file"
-                accept=".xlsx"
-                hidden
-                onChange={handleAvailabilityImportFileChange}
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+              <FormControl sx={{ minWidth: { xs: '100%', sm: 280 } }}>
+                <InputLabel id="schedule-board-week-label">週排班</InputLabel>
+                <Select
+                  labelId="schedule-board-week-label"
+                  label="週排班"
+                  value={selectedScheduleId}
+                  onChange={(event) => setSelectedScheduleId(event.target.value)}
+                >
+                  {sortedWeeklySchedules.map((schedule) => (
+                    <MenuItem key={schedule.id} value={String(schedule.id)}>
+                      {schedule.weekStartDate} 至 {schedule.weekEndDate}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <TextField
+                label="班表月份"
+                type="number"
+                value={scheduleMonth}
+                onChange={(event) =>
+                  setScheduleMonthOverrides((current) => ({
+                    ...current,
+                    [scheduleMonthKey]: event.target.value,
+                  }))
+                }
+                slotProps={{
+                  htmlInput: {
+                    min: 1,
+                    max: 12,
+                    inputMode: 'numeric',
+                  },
+                }}
+                sx={{ width: { xs: '100%', sm: 120 } }}
               />
-            </Button>
-            <Typography color="text.secondary" sx={{ alignSelf: 'center', minWidth: 140 }}>
-              {availabilityImportFile ? availabilityImportFile.name : 'No file selected'}
-            </Typography>
-            <Button
-              variant="contained"
-              onClick={() => void handleImportAvailabilityExcel()}
-              disabled={importingAvailability || !selectedScheduleId || !availabilityImportFile}
-            >
-              {importingAvailability ? '匯入中...' : '匯入假表'}
-            </Button>
-            <Button
-              variant="outlined"
-              onClick={() => void handleGenerateFixedAssignments()}
-              disabled={generatingFixedAssignments || !selectedSchedule}
-            >
-              {generatingFixedAssignments ? '產生中...' : '產生固定班'}
-            </Button>
+              <Button
+                variant="outlined"
+                component="label"
+                startIcon={<UploadFileIcon />}
+                disabled={importingAvailability}
+              >
+                選擇 Excel 檔案
+                <input
+                  type="file"
+                  accept=".xlsx"
+                  hidden
+                  onChange={handleAvailabilityImportFileChange}
+                />
+              </Button>
+              <Typography color="text.secondary" sx={{ alignSelf: 'center', minWidth: 140 }}>
+                {availabilityImportFile ? availabilityImportFile.name : '尚未選擇檔案'}
+              </Typography>
+              <Button
+                variant="contained"
+                onClick={() => void handleImportAvailabilityExcel()}
+                disabled={importingAvailability || !selectedScheduleId || !availabilityImportFile}
+              >
+                {importingAvailability ? '匯入中...' : '匯入工讀生休假'}
+              </Button>
+              <Button
+                variant="outlined"
+                onClick={() => void handleGenerateFixedAssignments()}
+                disabled={generatingFixedAssignments || !selectedSchedule}
+              >
+                {generatingFixedAssignments ? '產生中...' : '產生正職時間'}
+              </Button>
+            </Stack>
+          </Stack>
+
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={1.5}
+            sx={{ alignItems: { xs: 'stretch', sm: 'center' } }}
+          >
+            {selectedScheduleIsDraft ? (
+              <Button
+                variant="contained"
+                color="success"
+                startIcon={<PublishIcon />}
+                onClick={() => setPublishScheduleTarget(selectedSchedule)}
+                disabled={publishing || saving}
+                sx={{ minHeight: 56 }}
+              >
+                {publishing ? '發布中...' : '發布班表'}
+              </Button>
+            ) : null}
             <Button
               variant="outlined"
               startIcon={<DownloadIcon />}
               onClick={() => void exportScheduleImage()}
               disabled={loading || exportingImage}
+              sx={{ minHeight: 56 }}
             >
               {exportingImage ? '匯出中...' : '匯出圖片'}
             </Button>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreateAssignment}>
-              Assign Employee
-            </Button>
           </Stack>
         </Stack>
+
+        {copiedAssignment ? (
+          <Alert
+            severity="info"
+            data-html2canvas-ignore="true"
+            action={
+              <Button color="inherit" size="small" onClick={() => setCopiedAssignment(null)}>
+                取消複製
+              </Button>
+            }
+          >
+            已複製：{copiedAssignmentText}，請點選目標欄位貼上
+          </Alert>
+        ) : null}
 
         <Box
           id="schedule-export-area"
@@ -1552,7 +2189,7 @@ export default function SchedulePage() {
             size="small"
             sx={{
               width: '100%',
-              minWidth: `calc(${scheduleStickyColumnWidth * 2}px + ${
+              minWidth: `calc(${scheduleStickyColumnWidth * 2 + scheduleWorkHourColumnWidth}px + ${
                 scheduleDates.length || 1
               } * ${scheduleDateColumnMinWidth}px)`,
               borderCollapse: 'collapse',
@@ -1583,7 +2220,7 @@ export default function SchedulePage() {
                     zIndex: 3,
                   }}
                 >
-                  Job Title
+                  職稱
                 </TableCell>
                 <TableCell
                   align="center"
@@ -1598,7 +2235,24 @@ export default function SchedulePage() {
                     zIndex: 3,
                   }}
                 >
-                  Name
+                  姓名
+                </TableCell>
+                <TableCell
+                  align="center"
+                  rowSpan={2}
+                  data-html2canvas-ignore="true"
+                  sx={{
+                    width: scheduleWorkHourColumnWidth,
+                    minWidth: scheduleWorkHourColumnWidth,
+                    bgcolor: 'grey.100',
+                    fontWeight: 700,
+                    position: 'sticky',
+                    left: scheduleStickyColumnWidth * 2,
+                    zIndex: 3,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  工時
                 </TableCell>
                 {scheduleDates.map((date) => (
                   <TableCell
@@ -1636,77 +2290,15 @@ export default function SchedulePage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {selectedSchedule ? (
-                <TableRow hover>
-                  <TableCell
-                    align="center"
-                    sx={{
-                      bgcolor: 'background.paper',
-                      position: 'sticky',
-                      left: 0,
-                      zIndex: 2,
-                      whiteSpace: 'nowrap',
-                      fontWeight: 700,
-                    }}
-                  >
-                    Movie
-                  </TableCell>
-                  <TableCell
-                    align="center"
-                    sx={{
-                      bgcolor: 'background.paper',
-                      position: 'sticky',
-                      left: scheduleStickyColumnWidth,
-                      zIndex: 2,
-                      whiteSpace: 'nowrap',
-                      fontWeight: 700,
-                    }}
-                  >
-                    Notes
-                  </TableCell>
-                  {scheduleDates.map((date) => {
-                    const movieNote = movieNotes[`${selectedScheduleId}-${date}`];
+              {selectedSchedule && sortedEmployees.map((employee, employeeIndex) => (
+                <TableRow key={employee.id} hover>
+                  {(() => {
+                    const isMovieNoteRow = employeeIndex === 0;
+                    const shouldShowWorkHours = !isMovieNoteRow && isPartTimeEmployee(employee);
+                    const workHours = weeklyWorkHoursByEmployeeId[employee.id];
 
                     return (
-                      <TableCell
-                        key={date}
-                        align="center"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => handleOpenMovieNote(date)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            handleOpenMovieNote(date);
-                          }
-                        }}
-                        sx={{
-                          minWidth: scheduleDateColumnMinWidth,
-                          bgcolor: movieNote ? 'background.paper' : 'grey.50',
-                          cursor: 'pointer',
-                          color: movieNote ? 'error.main' : 'text.disabled',
-                          fontWeight: movieNote ? 700 : 400,
-                          px: 1,
-                          py: 0.5,
-                          '&:hover': {
-                            bgcolor: 'grey.100',
-                          },
-                          '&:focus-visible': {
-                            outline: 2,
-                            outlineColor: 'primary.main',
-                            outlineOffset: -2,
-                          },
-                        }}
-                      >
-                        {movieNote}
-                      </TableCell>
-                    );
-                  })}
-                </TableRow>
-              ) : null}
-
-              {selectedSchedule && sortedEmployees.map((employee) => (
-                <TableRow key={employee.id} hover>
+                      <>
                   <TableCell
                     align="center"
                     sx={{
@@ -1731,13 +2323,79 @@ export default function SchedulePage() {
                   >
                     {employee.name}
                   </TableCell>
+                  <TableCell
+                    align="center"
+                    data-html2canvas-ignore="true"
+                    sx={{
+                      bgcolor: 'background.paper',
+                      position: 'sticky',
+                      left: scheduleStickyColumnWidth * 2,
+                      zIndex: 2,
+                      whiteSpace: 'nowrap',
+                      color: shouldShowWorkHours ? 'text.secondary' : 'text.disabled',
+                      fontWeight: shouldShowWorkHours ? 600 : 400,
+                    }}
+                  >
+                    {shouldShowWorkHours ? (workHours && workHours !== '-' ? `${workHours} 小時` : '-') : ''}
+                  </TableCell>
                   {scheduleDates.map((date) => {
+                    if (isMovieNoteRow) {
+                      const movieNote = movieNotes[`${selectedScheduleId}-${date}`];
+
+                      return (
+                        <TableCell
+                          key={date}
+                          align="center"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleOpenMovieNote(date)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              handleOpenMovieNote(date);
+                            }
+                          }}
+                          sx={{
+                            minWidth: scheduleDateColumnMinWidth,
+                            bgcolor: movieNote ? 'background.paper' : 'grey.50',
+                            cursor: 'pointer',
+                            color: movieNote ? 'error.main' : 'text.disabled',
+                            fontWeight: movieNote ? 700 : 400,
+                            px: 1,
+                            py: 0.5,
+                            '&:hover': {
+                              bgcolor: 'grey.100',
+                            },
+                            '&:focus-visible': {
+                              outline: 2,
+                              outlineColor: 'primary.main',
+                              outlineOffset: -2,
+                            },
+                          }}
+                        >
+                          {movieNote}
+                        </TableCell>
+                      );
+                    }
+
                     const cellAssignments = assignmentGrid.get(`${employee.id}-${date}`) ?? [];
                     const monthlyLeave = monthlyLeaveGrid.get(`${employee.id}-${date}`);
                     const previewAvailability =
                       availabilityPreviewGrid.get(`${employee.id}-${date}`) ?? [];
                     const restAvailability = previewAvailability.find(isRestAvailability);
                     const hasRestDay = Boolean(monthlyLeave || restAvailability);
+                    const restDayLabel = monthlyLeave
+                      ? getLeaveTypeLabel(monthlyLeave.leaveType, 'schedule')
+                      : restPositionName;
+                    const hasRestAssignment = cellAssignments.some((assignment) => {
+                      const positionName = getAssignmentDisplayPositionName(assignment);
+                      return isRestAssignment(assignment, positionName);
+                    });
+                    const hasPublishedChange =
+                      selectedScheduleIsPublished
+                      && scheduleAssignmentChangeCellSet.has(
+                        getScheduleAssignmentChangeCellKey(employee.id, date),
+                      );
 
                     return (
                       <TableCell
@@ -1745,30 +2403,56 @@ export default function SchedulePage() {
                         align="center"
                         role="button"
                         tabIndex={0}
-                        onClick={() => handleOpenCellActions(employee, date, cellAssignments)}
+                        onClick={() => {
+                          if (copiedAssignment) {
+                            void handlePasteAssignment(employee.id, date);
+                            return;
+                          }
+
+                          handleOpenCellActions(employee, date, cellAssignments);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
+                            if (copiedAssignment) {
+                              void handlePasteAssignment(employee.id, date);
+                              return;
+                            }
+
                             handleOpenCellActions(employee, date, cellAssignments);
                           }
                         }}
                         sx={{
+                          position: 'relative',
                           minWidth: scheduleDateColumnMinWidth,
-                          bgcolor: cellAssignments.length > 0
+                          bgcolor: hasPublishedChange
+                            ? publishedChangeCellColor
+                            : hasRestAssignment
+                            ? restCellColor
+                            : cellAssignments.length > 0
                             ? 'background.paper'
                             : hasRestDay
                               ? restCellColor
                               : 'grey.50',
-                          cursor: 'pointer',
+                          backgroundImage: hasPublishedChange
+                            ? 'repeating-linear-gradient(135deg, rgba(211, 47, 47, 0.08) 0, rgba(211, 47, 47, 0.08) 6px, transparent 6px, transparent 12px)'
+                            : undefined,
+                          cursor: copiedAssignment ? 'copy' : 'pointer',
                           transition: 'background-color 120ms ease',
                           px: 1,
                           py: 0.5,
                           '&:hover': {
-                            bgcolor: cellAssignments.length > 0
-                              ? 'grey.50'
-                              : hasRestDay
+                            bgcolor: copiedAssignment
+                              ? '#e3f2fd'
+                              : hasPublishedChange
+                                ? publishedChangeCellHoverColor
+                              : hasRestAssignment
                                 ? restCellColor
-                                : 'grey.100',
+                                : cellAssignments.length > 0
+                                ? 'grey.50'
+                                : hasRestDay
+                                  ? restCellColor
+                                  : 'grey.100',
                           },
                           '&:focus-visible': {
                             outline: 2,
@@ -1785,22 +2469,27 @@ export default function SchedulePage() {
                                 overstaffingRanges,
                               );
                               const positionName = getAssignmentDisplayPositionName(assignment);
+                              const restAssignment = isRestAssignment(assignment, positionName);
 
                               return (
                                 <Box
                                   key={assignment.id}
                                   data-staffing-highlight={
-                                    isOverstaffed ? 'overstaffing' : undefined
+                                    !restAssignment && isOverstaffed ? 'overstaffing' : undefined
                                   }
                                   sx={{
                                     borderRadius: 1,
-                                    bgcolor: isOverstaffed
+                                    bgcolor: restAssignment
+                                      ? restCellColor
+                                      : isOverstaffed
                                       ? overstaffingAssignmentColor
                                       : 'transparent',
                                     px: 0.5,
                                     py: 0,
                                     '&:hover': {
-                                      bgcolor: isOverstaffed
+                                      bgcolor: restAssignment
+                                        ? restCellColor
+                                        : isOverstaffed
                                         ? overstaffingAssignmentColor
                                         : 'grey.100',
                                     },
@@ -1817,14 +2506,17 @@ export default function SchedulePage() {
                                         variant="body2"
                                         sx={{
                                           fontSize: 15,
-                                          fontWeight: 600,
+                                          fontWeight: 480,
                                           lineHeight: 1.35,
                                           whiteSpace: 'nowrap',
+                                          color: restAssignment ? restTextColor : 'text.primary',
                                         }}
                                       >
-                                        {`${formatCompactTime(assignment.startTime)}-${formatCompactTime(
-                                          assignment.endTime,
-                                        )}${positionName ? `  ${positionName}` : ''}`}
+                                        {restAssignment
+                                          ? restPositionName
+                                          : `${formatCompactTime(assignment.startTime)}-${formatCompactTime(
+                                              assignment.endTime,
+                                            )}${positionName ? `  ${positionName}` : ''}`}
                                       </Typography>
                                     </Box>
                                     <Stack
@@ -1832,7 +2524,20 @@ export default function SchedulePage() {
                                       spacing={0}
                                       data-html2canvas-ignore="true"
                                     >
-                                      <Tooltip title="Edit assignment">
+                                      <Tooltip title="複製班段">
+                                        <IconButton
+                                          aria-label="copy assignment from board"
+                                          size="small"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            handleCopyAssignment(assignment);
+                                          }}
+                                          sx={{ p: 0, ml: 0.25 }}
+                                        >
+                                          <ContentCopyIcon sx={{ fontSize: 13 }} />
+                                        </IconButton>
+                                      </Tooltip>
+                                      <Tooltip title="編輯班段">
                                         <IconButton
                                           aria-label="edit assignment from board"
                                           size="small"
@@ -1845,7 +2550,7 @@ export default function SchedulePage() {
                                           <EditIcon sx={{ fontSize: 13 }} />
                                         </IconButton>
                                       </Tooltip>
-                                      <Tooltip title="Delete assignment">
+                                      <Tooltip title="刪除班段">
                                         <IconButton
                                           aria-label="delete assignment from board"
                                           color="error"
@@ -1879,7 +2584,7 @@ export default function SchedulePage() {
                             style={{ color: restTextColor, fontWeight: 400 }}
                             sx={{ lineHeight: 1.35 }}
                           >
-                            休
+                            {restDayLabel}
                           </Typography>
                         ) : previewAvailability.length > 0 ? (
                           <Stack spacing={0.25} data-html2canvas-ignore="true">
@@ -1906,25 +2611,28 @@ export default function SchedulePage() {
                       </TableCell>
                     );
                   })}
+                      </>
+                    );
+                  })()}
                 </TableRow>
               ))}
 
               {!loading && selectedSchedule && sortedEmployees.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={2 + scheduleDates.length}
+                    colSpan={3 + scheduleDates.length}
                     align="center"
                     sx={{ py: 4, color: 'text.secondary' }}
                   >
-                    No employees found.
+                    目前沒有員工資料。
                   </TableCell>
                 </TableRow>
               ) : null}
 
               {!loading && !selectedSchedule ? (
                 <TableRow>
-                  <TableCell colSpan={2} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                    Select or create a weekly schedule to view the board.
+                  <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                    請選擇或新增週排班以查看班表。
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -1932,11 +2640,11 @@ export default function SchedulePage() {
               {loading ? (
                 <TableRow>
                   <TableCell
-                    colSpan={Math.max(2 + scheduleDates.length, 2)}
+                    colSpan={Math.max(3 + scheduleDates.length, 3)}
                     align="center"
                     sx={{ py: 4, color: 'text.secondary' }}
                   >
-                    Loading schedule board...
+                    載入班表中...
                   </TableCell>
                 </TableRow>
               ) : null}
@@ -1946,7 +2654,7 @@ export default function SchedulePage() {
                   <TableRow data-html2canvas-ignore="true">
                     <TableCell
                       align="center"
-                      colSpan={2}
+                      colSpan={3}
                       sx={{
                         bgcolor: 'grey.100',
                         fontWeight: 700,
@@ -1975,7 +2683,7 @@ export default function SchedulePage() {
                   <TableRow data-html2canvas-ignore="true">
                     <TableCell
                       align="center"
-                      colSpan={2}
+                      colSpan={3}
                       sx={{
                         bgcolor: 'background.paper',
                         color: 'text.secondary',
@@ -2003,34 +2711,43 @@ export default function SchedulePage() {
                             verticalAlign: 'top',
                           }}
                         >
-                          {dateResults.length > 0 ? (
-                            <Stack spacing={0.5}>
-                              {dateResults.map((result) => (
-                                <Typography
-                                  key={result.id}
-                                  variant="caption"
-                                  color="error.main"
-                                  sx={{
-                                    display: 'block',
-                                    fontWeight: 700,
-                                    lineHeight: 1.3,
-                                    whiteSpace: 'normal',
-                                    wordBreak: 'keep-all',
-                                  }}
-                                >
-                                  {result.position} {result.period}
-                                </Typography>
-                              ))}
-                            </Stack>
-                          ) : (
-                            <Typography
-                              variant="caption"
-                              color="success.main"
-                              sx={{ fontWeight: 700 }}
-                            >
-                              已補足
-                            </Typography>
-                          )}
+                          <Box
+                            sx={{
+                              minHeight: 96,
+                              display: 'flex',
+                              alignItems: dateResults.length > 0 ? 'flex-start' : 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            {dateResults.length > 0 ? (
+                              <Stack spacing={0.5}>
+                                {dateResults.map((result) => (
+                                  <Typography
+                                    key={result.id}
+                                    variant="caption"
+                                    color="error.main"
+                                    sx={{
+                                      display: 'block',
+                                      fontWeight: 700,
+                                      lineHeight: 1.3,
+                                      whiteSpace: 'normal',
+                                      wordBreak: 'keep-all',
+                                    }}
+                                  >
+                                    {result.position} {result.period}
+                                  </Typography>
+                                ))}
+                              </Stack>
+                            ) : (
+                              <Typography
+                                variant="caption"
+                                color="success.main"
+                                sx={{ fontWeight: 700 }}
+                              >
+                                已補足
+                              </Typography>
+                            )}
+                          </Box>
                         </TableCell>
                       );
                     })}
@@ -2046,11 +2763,11 @@ export default function SchedulePage() {
 
       <Dialog open={scheduleFormOpen} onClose={handleCloseScheduleForm} fullWidth maxWidth="sm">
         <Box component="form" onSubmit={handleSubmitSchedule}>
-          <DialogTitle>{editingSchedule ? 'Edit Week' : 'Add Week'}</DialogTitle>
+          <DialogTitle>{editingSchedule ? '編輯週排' : '新增週排'}</DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ pt: 1 }}>
               <TextField
-                label="Start Date"
+                label="開始日期"
                 type="date"
                 value={scheduleFormValues.weekStartDate}
                 onChange={handleScheduleDateChange('weekStartDate')}
@@ -2059,7 +2776,7 @@ export default function SchedulePage() {
                 slotProps={{ inputLabel: { shrink: true } }}
               />
               <TextField
-                label="End Date"
+                label="結束日期"
                 type="date"
                 value={scheduleFormValues.weekEndDate}
                 onChange={handleScheduleDateChange('weekEndDate')}
@@ -2068,10 +2785,10 @@ export default function SchedulePage() {
                 slotProps={{ inputLabel: { shrink: true } }}
               />
               <FormControl fullWidth required>
-                <InputLabel id="weekly-schedule-status-label">Status</InputLabel>
+                <InputLabel id="weekly-schedule-status-label">狀態</InputLabel>
                 <Select
                   labelId="weekly-schedule-status-label"
-                  label="Status"
+                  label="狀態"
                   value={scheduleFormValues.status}
                   onChange={(event) =>
                     setScheduleFormValues((current) => ({
@@ -2080,21 +2797,26 @@ export default function SchedulePage() {
                     }))
                   }
                 >
-                  {scheduleStatuses.map((status) => (
+                  {getEditableScheduleStatuses(scheduleFormValues.status).map((status) => (
                     <MenuItem key={status} value={status}>
-                      {status}
+                      {getScheduleStatusLabel(status)}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
+              {getNormalizedScheduleStatus(scheduleFormValues.status) === 'DRAFT' ? (
+                <Typography color="text.secondary" variant="body2">
+                  草稿仍可編輯與排班；要正式發布請使用班表上方的「發布班表」按鈕。
+                </Typography>
+              ) : null}
             </Stack>
           </DialogContent>
           <DialogActions>
             <Button onClick={handleCloseScheduleForm} disabled={saving}>
-              Cancel
+              取消
             </Button>
             <Button type="submit" variant="contained" disabled={saving}>
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? '儲存中...' : '儲存'}
             </Button>
           </DialogActions>
         </Box>
@@ -2102,14 +2824,14 @@ export default function SchedulePage() {
 
       <Dialog open={assignmentFormOpen} onClose={handleCloseAssignmentForm} fullWidth maxWidth="sm">
         <Box component="form" onSubmit={handleSubmitAssignment}>
-          <DialogTitle>{editingAssignment ? 'Edit Assignment' : 'Assign Employee'}</DialogTitle>
+          <DialogTitle>{editingAssignment ? '編輯排班' : '指派員工'}</DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ pt: 1 }}>
               <FormControl fullWidth>
-                <InputLabel id="assignment-week-label">Weekly Schedule</InputLabel>
+                <InputLabel id="assignment-week-label">週排班</InputLabel>
                 <Select
                   labelId="assignment-week-label"
-                  label="Weekly Schedule"
+                  label="週排班"
                   value={assignmentFormValues.weeklyScheduleId}
                   onChange={(event) =>
                     setAssignmentFormValues((current) => ({
@@ -2118,35 +2840,45 @@ export default function SchedulePage() {
                     }))
                   }
                 >
-                  <MenuItem value="">No Week Selected</MenuItem>
-                  {weeklySchedules.map((schedule) => (
+                  <MenuItem value="">未選擇週排班</MenuItem>
+                  {sortedWeeklySchedules.map((schedule, scheduleIndex) => (
                     <MenuItem key={schedule.id} value={String(schedule.id)}>
-                      {schedule.id} - {schedule.weekStartDate} to {schedule.weekEndDate}
+                      {scheduleIndex + 1} - {schedule.weekStartDate} 至 {schedule.weekEndDate}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
 
               <FormControl fullWidth required>
-                <InputLabel id="assignment-employee-label">Employee</InputLabel>
+                <InputLabel id="assignment-employee-label">員工</InputLabel>
                 <Select
                   labelId="assignment-employee-label"
-                  label="Employee"
+                  label="員工"
                   value={assignmentFormValues.employeeId}
                   onChange={(event) =>
-                    setAssignmentFormValues((current) => ({
-                      ...current,
-                      employeeId: event.target.value,
-                      positionId: isNoPositionRequiredJobTitle(
-                        employees.find((employee) => String(employee.id) === event.target.value)
-                          ?.jobTitle,
-                      )
-                        ? ''
-                        : current.positionId,
-                    }))
+                    setAssignmentFormValues((current) => {
+                      const nextEmployee = employees.find(
+                        (employee) => String(employee.id) === event.target.value,
+                      );
+                      const nextEmployeeNeedsPosition =
+                        employeeRequiresPositionAssignment(nextEmployee);
+                      const currentPosition = positions.find(
+                        (position) => String(position.id) === current.positionId,
+                      );
+                      const keepCurrentPosition =
+                        nextEmployeeNeedsPosition
+                        || isRestPositionName(currentPosition?.name)
+                        || isNoPositionAssignmentPosition(currentPosition);
+
+                      return {
+                        ...current,
+                        employeeId: event.target.value,
+                        positionId: keepCurrentPosition ? current.positionId : '',
+                      };
+                    })
                   }
                 >
-                  {employees.map((employee) => (
+                  {sortedEmployees.map((employee) => (
                     <MenuItem key={employee.id} value={String(employee.id)}>
                       {employee.name}
                     </MenuItem>
@@ -2155,23 +2887,43 @@ export default function SchedulePage() {
               </FormControl>
 
               <FormControl fullWidth required={assignmentPositionRequired}>
-                <InputLabel id="assignment-position-label">Position</InputLabel>
+                <InputLabel id="assignment-position-label">崗位</InputLabel>
                 <Select
                   labelId="assignment-position-label"
-                  label="Position"
+                  label="崗位"
                   value={assignmentFormValues.positionId}
-                  disabled={!assignmentPositionRequired}
-                  onChange={(event) =>
-                    setAssignmentFormValues((current) => ({
-                      ...current,
-                      positionId: event.target.value,
-                    }))
-                  }
+                  onChange={(event) => {
+                    const nextPosition = positions.find(
+                      (position) => String(position.id) === event.target.value,
+                    );
+                    const nextIsRestPosition = isRestPositionName(nextPosition?.name);
+
+                    setAssignmentFormValues((current) => {
+                      const currentIsRestPosition = isRestPositionName(
+                        selectedAssignmentPosition?.name,
+                      );
+
+                      return {
+                        ...current,
+                        positionId: event.target.value,
+                        startTime: nextIsRestPosition
+                          ? restAssignmentStartTime
+                          : currentIsRestPosition
+                            ? ''
+                            : current.startTime,
+                        endTime: nextIsRestPosition
+                          ? restAssignmentEndTime
+                          : currentIsRestPosition
+                            ? ''
+                            : current.endTime,
+                      };
+                    });
+                  }}
                 >
                   {!assignmentPositionRequired ? (
-                    <MenuItem value="">No position required</MenuItem>
+                    <MenuItem value="">不需要指定崗位</MenuItem>
                   ) : null}
-                  {positions.map((position) => (
+                  {assignmentPositionOptions.map((position) => (
                     <MenuItem key={position.id} value={String(position.id)}>
                       {position.name}
                     </MenuItem>
@@ -2180,7 +2932,7 @@ export default function SchedulePage() {
               </FormControl>
 
               <TextField
-                label="Date"
+                label="日期"
                 type="date"
                 value={assignmentFormValues.date}
                 onChange={handleAssignmentChange('date')}
@@ -2189,11 +2941,11 @@ export default function SchedulePage() {
                 slotProps={{ inputLabel: { shrink: true } }}
               />
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-                <FormControl fullWidth required>
-                  <InputLabel id="assignment-start-hour-label">Start Hour</InputLabel>
+                <FormControl fullWidth required={assignmentTimeRequired} disabled={assignmentRestSelected}>
+                  <InputLabel id="assignment-start-hour-label">開始小時</InputLabel>
                   <Select
                     labelId="assignment-start-hour-label"
-                    label="Start Hour"
+                    label="開始小時"
                     value={getTimeHour(assignmentFormValues.startTime)}
                     onChange={(event) =>
                       setAssignmentFormValues((current) => ({
@@ -2209,7 +2961,7 @@ export default function SchedulePage() {
                     }
                   >
                     <MenuItem value="" disabled>
-                      Hour
+                      小時
                     </MenuItem>
                     {scheduleHourOptions.map((hour) => (
                       <MenuItem key={hour} value={hour}>
@@ -2218,11 +2970,11 @@ export default function SchedulePage() {
                     ))}
                   </Select>
                 </FormControl>
-                <FormControl fullWidth required>
-                  <InputLabel id="assignment-start-minute-label">Start Minute</InputLabel>
+                <FormControl fullWidth required={assignmentTimeRequired} disabled={assignmentRestSelected}>
+                  <InputLabel id="assignment-start-minute-label">開始分鐘</InputLabel>
                   <Select
                     labelId="assignment-start-minute-label"
-                    label="Start Minute"
+                    label="開始分鐘"
                     value={getTimeMinute(
                       assignmentFormValues.startTime,
                       scheduleStartMinuteOptions,
@@ -2241,7 +2993,7 @@ export default function SchedulePage() {
                     }
                   >
                     <MenuItem value="" disabled>
-                      Minute
+                      分鐘
                     </MenuItem>
                     {scheduleStartMinuteOptions.map((minute) => (
                       <MenuItem key={minute} value={minute}>
@@ -2252,11 +3004,11 @@ export default function SchedulePage() {
                 </FormControl>
               </Stack>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-                <FormControl fullWidth required>
-                  <InputLabel id="assignment-end-hour-label">End Hour</InputLabel>
+                <FormControl fullWidth required={assignmentTimeRequired} disabled={assignmentRestSelected}>
+                  <InputLabel id="assignment-end-hour-label">結束小時</InputLabel>
                   <Select
                     labelId="assignment-end-hour-label"
-                    label="End Hour"
+                    label="結束小時"
                     value={getTimeHour(assignmentFormValues.endTime)}
                     onChange={(event) =>
                       setAssignmentFormValues((current) => ({
@@ -2272,7 +3024,7 @@ export default function SchedulePage() {
                     }
                   >
                     <MenuItem value="" disabled>
-                      Hour
+                      小時
                     </MenuItem>
                     {scheduleHourOptions.map((hour) => (
                       <MenuItem key={hour} value={hour}>
@@ -2281,11 +3033,11 @@ export default function SchedulePage() {
                     ))}
                   </Select>
                 </FormControl>
-                <FormControl fullWidth required>
-                  <InputLabel id="assignment-end-minute-label">End Minute</InputLabel>
+                <FormControl fullWidth required={assignmentTimeRequired} disabled={assignmentRestSelected}>
+                  <InputLabel id="assignment-end-minute-label">結束分鐘</InputLabel>
                   <Select
                     labelId="assignment-end-minute-label"
-                    label="End Minute"
+                    label="結束分鐘"
                     value={getTimeMinute(assignmentFormValues.endTime, scheduleEndMinuteOptions)}
                     onChange={(event) =>
                       setAssignmentFormValues((current) => ({
@@ -2301,7 +3053,7 @@ export default function SchedulePage() {
                     }
                   >
                     <MenuItem value="" disabled>
-                      Minute
+                      分鐘
                     </MenuItem>
                     {scheduleEndMinuteOptions.map((minute) => (
                       <MenuItem key={minute} value={minute}>
@@ -2312,9 +3064,10 @@ export default function SchedulePage() {
                 </FormControl>
               </Stack>
               <TextField
-                label="Note"
-                value={assignmentFormValues.note}
-                onChange={handleAssignmentChange('note')}
+                key={assignmentNoteInputKey}
+                label="備註"
+                name="note"
+                defaultValue={assignmentFormValues.note}
                 fullWidth
                 multiline
                 minRows={3}
@@ -2323,10 +3076,10 @@ export default function SchedulePage() {
           </DialogContent>
           <DialogActions>
             <Button onClick={handleCloseAssignmentForm} disabled={saving}>
-              Cancel
+              取消
             </Button>
             <Button type="submit" variant="contained" disabled={saving}>
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? '儲存中...' : '儲存'}
             </Button>
           </DialogActions>
         </Box>
@@ -2358,7 +3111,11 @@ export default function SchedulePage() {
             onClick={() => void handleConfirmAssignmentWarning()}
             disabled={saving}
           >
-            {saving ? '儲存中...' : '仍然排班'}
+            {saving
+              ? '儲存中...'
+              : pendingAssignmentAction === 'paste'
+                ? '仍然貼上'
+                : '仍然排班'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2372,7 +3129,7 @@ export default function SchedulePage() {
         <DialogTitle>
           {cellActionTarget
             ? `${cellActionTarget.employee.name} - ${cellActionTarget.date}`
-            : 'Assignments'}
+            : '班段'}
         </DialogTitle>
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 1 }}>
@@ -2388,8 +3145,11 @@ export default function SchedulePage() {
                 >
                   <Box>
                     <Typography sx={{ fontWeight: 700 }}>
-                      {formatTime(assignment.startTime)}-{formatTime(assignment.endTime)}{' '}
-                      {getAssignmentDisplayPositionName(assignment)}
+                      {isRestAssignment(assignment, getAssignmentDisplayPositionName(assignment))
+                        ? restPositionName
+                        : `${formatTime(assignment.startTime)}-${formatTime(assignment.endTime)} ${getAssignmentDisplayPositionName(
+                            assignment,
+                          )}`}
                     </Typography>
                     {assignment.note ? (
                       <Typography color="text.secondary" variant="body2">
@@ -2400,13 +3160,23 @@ export default function SchedulePage() {
                   <Stack direction="row" spacing={1}>
                     <Button
                       size="small"
+                      startIcon={<ContentCopyIcon />}
+                      onClick={() => {
+                        handleCopyAssignment(assignment);
+                        setCellActionTarget(null);
+                      }}
+                    >
+                      複製
+                    </Button>
+                    <Button
+                      size="small"
                       startIcon={<EditIcon />}
                       onClick={() => {
                         handleOpenEditAssignment(assignment);
                         setCellActionTarget(null);
                       }}
                     >
-                      Edit
+                      編輯
                     </Button>
                     <Button
                       size="small"
@@ -2417,7 +3187,7 @@ export default function SchedulePage() {
                         setCellActionTarget(null);
                       }}
                     >
-                      Delete
+                      刪除
                     </Button>
                   </Stack>
                 </Stack>
@@ -2426,45 +3196,56 @@ export default function SchedulePage() {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCellActionTarget(null)}>Close</Button>
+          <Button onClick={() => setCellActionTarget(null)}>關閉</Button>
           {cellActionTarget && cellActionTarget.assignments.length === 0 ? (
             <Button
               variant="contained"
               startIcon={<AddIcon />}
               onClick={handleOpenCreateAssignmentFromCellActions}
             >
-              Add Assignment
+              新增班段
             </Button>
           ) : null}
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(movieNoteDate)} onClose={() => setMovieNoteDate(null)} fullWidth maxWidth="sm">
-        <DialogTitle>
-          Movie Notes {movieNoteDate ? `- ${formatDateLabel(movieNoteDate)} ${formatWeekday(movieNoteDate)}` : ''}
-        </DialogTitle>
+      <MovieNoteDialog
+        open={Boolean(movieNoteDate)}
+        title={`電影資訊 ${
+          movieNoteDate ? `- ${formatDateLabel(movieNoteDate)} ${formatWeekday(movieNoteDate)}` : ''
+        }`}
+        initialValue={movieNoteDate ? movieNotes[`${selectedScheduleId}-${movieNoteDate}`] ?? '' : ''}
+        onClose={() => setMovieNoteDate(null)}
+        onSave={handleSaveMovieNote}
+      />
+
+      <Dialog
+        open={Boolean(publishScheduleTarget)}
+        onClose={() => {
+          if (!publishing) {
+            setPublishScheduleTarget(null);
+          }
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>發布班表</DialogTitle>
         <DialogContent>
-          <TextField
-            label="Movie notes"
-            value={movieNoteValue}
-            onChange={(event) => setMovieNoteValue(event.target.value)}
-            fullWidth
-            multiline
-            minRows={3}
-            sx={{ mt: 1 }}
-          />
+          <Typography>
+            發布後，之後修改的班表格子會以淡紅色標示。確定要發布此班表嗎？
+          </Typography>
         </DialogContent>
         <DialogActions>
-          <Button
-            onClick={() => {
-              setMovieNoteDate(null);
-              setMovieNoteValue('');
-            }}
-          >
-            Cancel
+          <Button onClick={() => setPublishScheduleTarget(null)} disabled={publishing}>
+            取消
           </Button>
-          <Button variant="contained" onClick={handleSaveMovieNote}>
-            Save
+          <Button
+            variant="contained"
+            color="success"
+            onClick={() => void handleConfirmPublishSchedule()}
+            disabled={publishing || !publishScheduleTarget}
+          >
+            {publishing ? '發布中...' : '確認發布'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2475,15 +3256,15 @@ export default function SchedulePage() {
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>Delete Week</DialogTitle>
+        <DialogTitle>刪除週排</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete week {deleteScheduleTarget?.weekStartDate} to {deleteScheduleTarget?.weekEndDate}?
+            確定要刪除 {deleteScheduleTarget?.weekStartDate} 至 {deleteScheduleTarget?.weekEndDate} 的週排班嗎？
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteScheduleTarget(null)} disabled={saving}>
-            Cancel
+            取消
           </Button>
           <Button
             color="error"
@@ -2491,7 +3272,7 @@ export default function SchedulePage() {
             onClick={handleConfirmDeleteSchedule}
             disabled={saving}
           >
-            Delete
+            刪除
           </Button>
         </DialogActions>
       </Dialog>
@@ -2502,15 +3283,15 @@ export default function SchedulePage() {
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>Delete Assignment</DialogTitle>
+        <DialogTitle>刪除排班</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete {deleteAssignmentTarget?.employee.name}'s assignment on {deleteAssignmentTarget?.date}?
+            確定要刪除 {deleteAssignmentTarget?.employee.name} 在 {deleteAssignmentTarget?.date} 的班段嗎？
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteAssignmentTarget(null)} disabled={saving}>
-            Cancel
+            取消
           </Button>
           <Button
             color="error"
@@ -2518,7 +3299,7 @@ export default function SchedulePage() {
             onClick={handleConfirmDeleteAssignment}
             disabled={saving}
           >
-            Delete
+            刪除
           </Button>
         </DialogActions>
       </Dialog>

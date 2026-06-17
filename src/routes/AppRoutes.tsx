@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import MainLayout from '../layouts/MainLayout';
 import AvailabilityPage from '../pages/AvailabilityPage';
 import EmployeePage from '../pages/EmployeePage';
+import EmployeeSortPage from '../pages/EmployeeSortPage';
 import LaborStatsPage from '../pages/LaborStatsPage';
 import MonthlyLeavePage from '../pages/MonthlyLeavePage';
 import OverstaffingCheckPage from '../pages/OverstaffingCheckPage';
@@ -14,8 +15,9 @@ export default function AppRoutes() {
     <BrowserRouter>
       <Routes>
         <Route element={<MainLayout />}>
-          <Route index element={<Navigate to="/employees" replace />} />
+          <Route index element={<Navigate to="/weekly-schedules" replace />} />
           <Route path="/employees" element={<EmployeePage />} />
+          <Route path="/employee-sort-order" element={<EmployeeSortPage />} />
           <Route path="/availability" element={<AvailabilityPage />} />
           <Route path="/positions" element={<PositionPage />} />
           <Route path="/weekly-schedules" element={<SchedulePage />} />

@@ -42,6 +42,7 @@ import type {
 } from '../types/availability';
 import type { Employee } from '../types/employee';
 import type { WeeklySchedule } from '../types/weeklySchedule';
+import { getActiveEmployees } from '../utils/employeeFilters';
 
 type AvailabilityFormValues = {
   employeeId: string;
@@ -68,10 +69,10 @@ const emptyFormValues: AvailabilityFormValues = {
 const availabilityTypes: AvailabilityType[] = ['BEFORE', 'AFTER', 'UNAVAILABLE', 'ALL_DAY'];
 
 const availabilityTypeLabels: Record<AvailabilityType, string> = {
-  BEFORE: 'Before time',
-  AFTER: 'After time',
-  UNAVAILABLE: 'Unavailable',
-  ALL_DAY: 'Available all day',
+  BEFORE: '指定時間以前可上班',
+  AFTER: '指定時間以後可上班',
+  UNAVAILABLE: '不可上班',
+  ALL_DAY: '全天可上班',
 };
 
 function getErrorMessage(error: unknown) {
@@ -103,7 +104,7 @@ function getErrorMessage(error: unknown) {
     return error.message;
   }
 
-  return 'An unexpected error occurred.';
+  return '發生未預期的錯誤。';
 }
 
 function formatTime(time?: string | null) {
@@ -163,8 +164,20 @@ export default function AvailabilityPage() {
         employeeService.getEmployees(),
         weeklyScheduleService.getWeeklySchedules(),
       ]);
-      setAvailability(availabilityData);
-      setEmployees(employeeData);
+      const activeEmployees = getActiveEmployees(employeeData);
+      const activeEmployeeIds = new Set(activeEmployees.map((employee) => employee.id));
+      const selectedEmployeeIsActive =
+        !selectedEmployeeId || activeEmployeeIds.has(Number(selectedEmployeeId));
+
+      setAvailability(
+        selectedEmployeeIsActive
+          ? availabilityData.filter((item) => activeEmployeeIds.has(item.employee.id))
+          : [],
+      );
+      setEmployees(activeEmployees);
+      if (!selectedEmployeeIsActive) {
+        setSelectedEmployeeId('');
+      }
       setWeeklySchedules(weeklyScheduleData);
       setImportWeeklyScheduleId((currentWeeklyScheduleId) => {
         const currentScheduleExists = weeklyScheduleData.some(
@@ -238,12 +251,12 @@ export default function AvailabilityPage() {
     const boundaryTime = shouldIncludeBoundaryTime ? formValues.boundaryTime : '';
 
     if (!employeeId || !formValues.date) {
-      setError('Employee and date are required.');
+      setError('員工與日期為必填。');
       return;
     }
 
     if (shouldIncludeBoundaryTime && !boundaryTime) {
-      setError('Boundary time is required for BEFORE and AFTER availability.');
+      setError('選擇指定時間以前或以後時，必須填寫界線時間。');
       return;
     }
 
@@ -303,7 +316,7 @@ export default function AvailabilityPage() {
       setImportFile(null);
       setSnackbar({
         open: true,
-        message: 'Please select an .xlsx file.',
+        message: '請選擇 .xlsx 檔案。',
         severity: 'error',
       });
       event.target.value = '';
@@ -319,7 +332,7 @@ export default function AvailabilityPage() {
     if (!weeklyScheduleId) {
       setSnackbar({
         open: true,
-        message: 'Please select a weekly schedule.',
+        message: '請選擇週排班。',
         severity: 'error',
       });
       return;
@@ -328,7 +341,7 @@ export default function AvailabilityPage() {
     if (!importFile) {
       setSnackbar({
         open: true,
-        message: 'Please select an Excel file.',
+        message: '請選擇 Excel 檔案。',
         severity: 'error',
       });
       return;
@@ -368,15 +381,15 @@ export default function AvailabilityPage() {
       >
         <Box>
           <Typography variant="h4" component="h2">
-            Availability Management
+            工讀生休假管理
           </Typography>
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            Manage employee available working periods.
+            管理工讀生休假與可上班時段。
           </Typography>
         </Box>
 
         <Stack direction="row" spacing={1}>
-          <Tooltip title="Refresh availability">
+          <Tooltip title="重新整理休假資料">
             <span>
               <IconButton onClick={loadPageData} disabled={loading || saving}>
                 <RefreshIcon />
@@ -384,7 +397,7 @@ export default function AvailabilityPage() {
             </span>
           </Tooltip>
           <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenCreate}>
-            Add Availability
+            新增休假資料
           </Button>
         </Stack>
       </Stack>
@@ -395,10 +408,10 @@ export default function AvailabilityPage() {
         <Stack spacing={2}>
           <Box>
             <Typography variant="h6" component="h3">
-              匯入假表
+              匯入工讀生休假
             </Typography>
             <Typography color="text.secondary" variant="body2" sx={{ mt: 0.5 }}>
-              Upload a Google Form Excel file for the selected weekly schedule.
+              上傳指定週排班的工讀生休假 Google 表單 Excel 檔案。
             </Typography>
           </Box>
 
@@ -408,15 +421,15 @@ export default function AvailabilityPage() {
             sx={{ alignItems: { xs: 'stretch', md: 'center' } }}
           >
             <FormControl sx={{ minWidth: { xs: '100%', md: 320 } }}>
-              <InputLabel id="availability-import-week-label">Weekly Schedule</InputLabel>
+              <InputLabel id="availability-import-week-label">週排班</InputLabel>
               <Select
                 labelId="availability-import-week-label"
-                label="Weekly Schedule"
+                label="週排班"
                 value={importWeeklyScheduleId}
                 onChange={(event) => setImportWeeklyScheduleId(event.target.value)}
               >
                 <MenuItem value="" disabled>
-                  No weekly schedule selected
+                  尚未選擇週排班
                 </MenuItem>
                 {weeklySchedules.map((schedule) => (
                   <MenuItem key={schedule.id} value={String(schedule.id)}>
@@ -443,7 +456,7 @@ export default function AvailabilityPage() {
             </Button>
 
             <Typography color="text.secondary" sx={{ minWidth: 160 }}>
-              {importFile ? importFile.name : 'No file selected'}
+              {importFile ? importFile.name : '尚未選擇檔案'}
             </Typography>
 
             <Button
@@ -451,7 +464,7 @@ export default function AvailabilityPage() {
               onClick={() => void handleImportAvailability()}
               disabled={importing || !importWeeklyScheduleId || !importFile}
             >
-              {importing ? '匯入中...' : '匯入假表'}
+              {importing ? '匯入中...' : '匯入工讀生休假'}
             </Button>
           </Stack>
         </Stack>
@@ -467,27 +480,27 @@ export default function AvailabilityPage() {
           }}
         >
           <FormControl sx={{ minWidth: { xs: '100%', md: 320 } }}>
-            <InputLabel id="employee-filter-select-label">Employee Filter</InputLabel>
+            <InputLabel id="employee-filter-select-label">員工篩選</InputLabel>
             <Select
               labelId="employee-filter-select-label"
-              label="Employee Filter"
+              label="員工篩選"
               value={selectedEmployeeId}
               onChange={(event) => setSelectedEmployeeId(event.target.value)}
             >
-              <MenuItem value="">All Employees</MenuItem>
+              <MenuItem value="">全部員工</MenuItem>
               {employees.map((employee) => (
                 <MenuItem key={employee.id} value={String(employee.id)}>
-                  {employee.id} - {employee.name}
+                  {employee.name}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
 
-          <Typography color="text.secondary">
-            {selectedEmployeeId
-              ? `Showing employee ID ${selectedEmployeeId}`
-              : 'Showing all employees'}
-          </Typography>
+          {!selectedEmployeeId ? (
+            <Typography color="text.secondary">
+              目前顯示所有員工
+            </Typography>
+          ) : null}
         </Stack>
       </Paper>
 
@@ -495,13 +508,13 @@ export default function AvailabilityPage() {
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Employee</TableCell>
-              <TableCell>Date</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Boundary Time</TableCell>
-              <TableCell>Note</TableCell>
-              <TableCell align="right">Actions</TableCell>
+              <TableCell>編號</TableCell>
+              <TableCell>員工</TableCell>
+              <TableCell>日期</TableCell>
+              <TableCell>類型</TableCell>
+              <TableCell>界線時間</TableCell>
+              <TableCell>備註</TableCell>
+              <TableCell align="right">操作</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -522,14 +535,14 @@ export default function AvailabilityPage() {
                 <TableCell>{formatTime(item.boundaryTime)}</TableCell>
                 <TableCell>{item.note || '-'}</TableCell>
                 <TableCell align="right">
-                  <Tooltip title="Edit availability">
-                    <IconButton aria-label="edit availability" onClick={() => handleOpenEdit(item)}>
+                  <Tooltip title="編輯休假資料">
+                    <IconButton aria-label="編輯休假資料" onClick={() => handleOpenEdit(item)}>
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  <Tooltip title="Delete availability">
+                  <Tooltip title="刪除休假資料">
                     <IconButton
-                      aria-label="delete availability"
+                      aria-label="刪除休假資料"
                       color="error"
                       onClick={() => setDeleteTarget(item)}
                     >
@@ -543,7 +556,7 @@ export default function AvailabilityPage() {
             {!loading && availability.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  No availability records found.
+                  目前沒有休假資料。
                 </TableCell>
               </TableRow>
             ) : null}
@@ -551,7 +564,7 @@ export default function AvailabilityPage() {
             {loading ? (
               <TableRow>
                 <TableCell colSpan={7} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  Loading availability...
+                  載入休假資料中...
                 </TableCell>
               </TableRow>
             ) : null}
@@ -562,15 +575,15 @@ export default function AvailabilityPage() {
       <Dialog open={formOpen} onClose={handleCloseForm} fullWidth maxWidth="sm">
         <Box component="form" onSubmit={handleSubmit}>
           <DialogTitle>
-            {editingAvailability ? 'Edit Availability' : 'Add Availability'}
+            {editingAvailability ? '編輯休假資料' : '新增休假資料'}
           </DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ pt: 1 }}>
               <FormControl fullWidth required>
-                <InputLabel id="employee-select-label">Employee</InputLabel>
+                <InputLabel id="employee-select-label">員工</InputLabel>
                 <Select
                   labelId="employee-select-label"
-                  label="Employee"
+                  label="員工"
                   value={formValues.employeeId}
                   onChange={(event) =>
                     setFormValues((current) => ({
@@ -581,14 +594,14 @@ export default function AvailabilityPage() {
                 >
                   {employees.map((employee) => (
                     <MenuItem key={employee.id} value={String(employee.id)}>
-                      {employee.id} - {employee.name}
+                      {employee.name}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
 
               <TextField
-                label="Date"
+                label="日期"
                 type="date"
                 value={formValues.date}
                 onChange={handleTextChange('date')}
@@ -598,10 +611,10 @@ export default function AvailabilityPage() {
               />
 
               <FormControl fullWidth required>
-                <InputLabel id="availability-type-select-label">Availability Type</InputLabel>
+                <InputLabel id="availability-type-select-label">可上班類型</InputLabel>
                 <Select
                   labelId="availability-type-select-label"
-                  label="Availability Type"
+                  label="可上班類型"
                   value={formValues.availabilityType}
                   onChange={(event) =>
                     setFormValues((current) => ({
@@ -619,7 +632,7 @@ export default function AvailabilityPage() {
               </FormControl>
 
               <TextField
-                label="Boundary Time"
+                label="界線時間"
                 type="time"
                 value={formValues.boundaryTime}
                 onChange={handleTextChange('boundaryTime')}
@@ -630,7 +643,7 @@ export default function AvailabilityPage() {
               />
 
               <TextField
-                label="Note"
+                label="備註"
                 value={formValues.note}
                 onChange={handleTextChange('note')}
                 fullWidth
@@ -641,28 +654,28 @@ export default function AvailabilityPage() {
           </DialogContent>
           <DialogActions>
             <Button onClick={handleCloseForm} disabled={saving}>
-              Cancel
+              取消
             </Button>
             <Button type="submit" variant="contained" disabled={saving}>
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? '儲存中...' : '儲存'}
             </Button>
           </DialogActions>
         </Box>
       </Dialog>
 
       <Dialog open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Delete Availability</DialogTitle>
+        <DialogTitle>刪除休假資料</DialogTitle>
         <DialogContent>
           <Typography>
-            Delete availability for {deleteTarget?.employee.name} on {deleteTarget?.date}?
+            確定要刪除 {deleteTarget?.employee.name} 在 {deleteTarget?.date} 的休假資料嗎？
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteTarget(null)} disabled={saving}>
-            Cancel
+            取消
           </Button>
           <Button color="error" variant="contained" onClick={handleConfirmDelete} disabled={saving}>
-            Delete
+            刪除
           </Button>
         </DialogActions>
       </Dialog>

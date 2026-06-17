@@ -1,5 +1,6 @@
 import { monthlyLeaveApi } from '../api/monthlyLeaveApi';
-import type { MonthlyLeavePayload } from '../types/monthlyLeave';
+import type { LeaveType, MonthlyLeavePayload } from '../types/monthlyLeave';
+import { defaultLeaveType } from '../utils/leaveType';
 
 export const monthlyLeaveService = {
   getMonthlyLeaves() {
@@ -14,12 +15,24 @@ export const monthlyLeaveService = {
     return monthlyLeaveApi.getByRange(startDate, endDate);
   },
 
-  createMonthlyLeave(employeeId: number, leaveDate: string) {
-    return monthlyLeaveApi.createForEmployee(employeeId, leaveDate);
+  getMonthlyLeaveSummary(year: number, month: number) {
+    return monthlyLeaveApi.getSummary(year, month);
+  },
+
+  createMonthlyLeave(
+    employeeId: number,
+    leaveDate: string,
+    leaveType: LeaveType = defaultLeaveType,
+  ) {
+    return monthlyLeaveApi.createForEmployee(employeeId, leaveDate, leaveType);
   },
 
   createMonthlyLeaveWithPayload(payload: MonthlyLeavePayload) {
     return monthlyLeaveApi.create(payload);
+  },
+
+  updateMonthlyLeave(id: number, payload: MonthlyLeavePayload) {
+    return monthlyLeaveApi.update(id, payload);
   },
 
   deleteMonthlyLeave(id: number) {

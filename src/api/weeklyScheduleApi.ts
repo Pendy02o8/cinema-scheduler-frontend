@@ -19,6 +19,15 @@ export const weeklyScheduleApi = {
     return response.data;
   },
 
+  async publishWeeklySchedule(schedule: WeeklySchedule) {
+    const response = await httpClient.put<WeeklySchedule>(`${weeklySchedulePath}/${schedule.id}`, {
+      weekStartDate: schedule.weekStartDate,
+      weekEndDate: schedule.weekEndDate,
+      status: 'PUBLISHED',
+    });
+    return response.data;
+  },
+
   async remove(id: number) {
     await httpClient.delete(`${weeklySchedulePath}/${id}`);
   },

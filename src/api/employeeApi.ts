@@ -1,5 +1,5 @@
 import httpClient from './httpClient';
-import type { Employee, EmployeePayload } from '../types/employee';
+import type { Employee, EmployeePayload, EmployeeSortOrderPayload } from '../types/employee';
 
 const employeePath = '/employees';
 
@@ -22,6 +22,10 @@ export const employeeApi = {
   async update(id: number, payload: EmployeePayload) {
     const response = await httpClient.put<Employee>(`${employeePath}/${id}`, payload);
     return response.data;
+  },
+
+  async updateSortOrder(payload: EmployeeSortOrderPayload[]) {
+    await httpClient.put(`${employeePath}/sort-order`, payload);
   },
 
   async remove(id: number) {

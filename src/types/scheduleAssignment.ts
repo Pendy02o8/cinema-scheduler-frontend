@@ -26,5 +26,18 @@ export type ScheduleAssignmentPayload = {
 };
 
 export type ScheduleAssignmentValidationResult = {
-  warnings: string[];
+  warnings?: string[];
+  errors?: string[];
+  message?: string;
+};
+
+export type ScheduleAssignmentChangeType = 'CREATED' | 'UPDATED' | 'DELETED';
+
+export type ScheduleAssignmentChange = {
+  id: number;
+  weeklySchedule?: Pick<WeeklySchedule, 'id'> | null;
+  employee: Pick<Employee, 'id' | 'name'>;
+  date: string;
+  changeType: ScheduleAssignmentChangeType;
+  createdAt?: string | null;
 };

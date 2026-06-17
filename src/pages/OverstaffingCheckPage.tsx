@@ -41,7 +41,7 @@ function getErrorMessage(error: unknown) {
     return error.message;
   }
 
-  return 'An unexpected error occurred.';
+  return '發生未預期的錯誤。';
 }
 
 function getToday() {
@@ -125,12 +125,12 @@ export default function OverstaffingCheckPage() {
     event.preventDefault();
 
     if (formValues.mode === 'date' && !formValues.date) {
-      setError('Date is required.');
+      setError('日期為必填。');
       return;
     }
 
     if (formValues.mode === 'week' && !formValues.weeklyScheduleId) {
-      setError('Weekly schedule is required.');
+      setError('週排班為必填。');
       return;
     }
 
@@ -158,10 +158,10 @@ export default function OverstaffingCheckPage() {
     <Stack spacing={3}>
       <Box>
         <Typography variant="h4" component="h2">
-          Overstaffing Check
+          超編檢查
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-          Display backend overstaffing validation results and excess periods.
+          顯示後端超編檢查結果與人力過多的時段。
         </Typography>
       </Box>
 
@@ -175,10 +175,10 @@ export default function OverstaffingCheckPage() {
             sx={{ alignItems: { xs: 'stretch', md: 'center' } }}
           >
             <FormControl sx={{ minWidth: { xs: '100%', md: 160 } }}>
-              <InputLabel id="overstaffing-mode-label">Scope</InputLabel>
+              <InputLabel id="overstaffing-mode-label">檢查範圍</InputLabel>
               <Select
                 labelId="overstaffing-mode-label"
-                label="Scope"
+                label="檢查範圍"
                 value={formValues.mode}
                 onChange={(event) =>
                   setFormValues((current) => ({
@@ -187,14 +187,14 @@ export default function OverstaffingCheckPage() {
                   }))
                 }
               >
-                <MenuItem value="date">Single Date</MenuItem>
-                <MenuItem value="week">Weekly Schedule</MenuItem>
+                <MenuItem value="date">單日</MenuItem>
+                <MenuItem value="week">週排班</MenuItem>
               </Select>
             </FormControl>
 
             {formValues.mode === 'date' ? (
               <TextField
-                label="Date"
+                label="日期"
                 type="date"
                 value={formValues.date}
                 onChange={handleDateChange}
@@ -204,10 +204,10 @@ export default function OverstaffingCheckPage() {
             ) : (
               <>
                 <FormControl sx={{ minWidth: { xs: '100%', md: 280 } }} required>
-                  <InputLabel id="overstaffing-week-label">Weekly Schedule</InputLabel>
+                  <InputLabel id="overstaffing-week-label">週排班</InputLabel>
                   <Select
                     labelId="overstaffing-week-label"
-                    label="Weekly Schedule"
+                    label="週排班"
                     value={formValues.weeklyScheduleId}
                     onChange={(event) => {
                       const weeklyScheduleId = event.target.value;
@@ -225,20 +225,20 @@ export default function OverstaffingCheckPage() {
                   >
                     {weeklySchedules.map((schedule) => (
                       <MenuItem key={schedule.id} value={String(schedule.id)}>
-                        {schedule.weekStartDate} to {schedule.weekEndDate}
+                        {schedule.weekStartDate} 至 {schedule.weekEndDate}
                       </MenuItem>
                     ))}
                   </Select>
                 </FormControl>
                 <TextField
-                  label="Start Date"
+                  label="開始日期"
                   type="date"
                   value={formValues.startDate}
                   disabled
                   slotProps={{ inputLabel: { shrink: true } }}
                 />
                 <TextField
-                  label="End Date"
+                  label="結束日期"
                   type="date"
                   value={formValues.endDate}
                   disabled
@@ -254,24 +254,23 @@ export default function OverstaffingCheckPage() {
               disabled={checking || loadingSchedules}
               sx={{ minWidth: 140 }}
             >
-              {checking ? 'Checking...' : 'Check'}
+              {checking ? '檢查中...' : '檢查'}
             </Button>
           </Stack>
         </Box>
       </Paper>
 
       {hasChecked && results.length === 0 ? (
-        <Alert severity="success">No overstaffing results found.</Alert>
+        <Alert severity="success">沒有超編結果。</Alert>
       ) : null}
 
       <TableContainer component={Paper} variant="outlined">
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Affected Position</TableCell>
-              <TableCell>Excess Period</TableCell>
-              <TableCell>Backend Result</TableCell>
+              <TableCell>日期</TableCell>
+              <TableCell>受影響崗位</TableCell>
+              <TableCell>超出時段</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -282,22 +281,21 @@ export default function OverstaffingCheckPage() {
                   <Chip label={result.position} color="error" variant="outlined" size="small" />
                 </TableCell>
                 <TableCell>{result.period}</TableCell>
-                <TableCell>{result.rawText}</TableCell>
               </TableRow>
             ))}
 
             {!checking && results.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  No overstaffing check loaded.
+                <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  尚未載入超編檢查。
                 </TableCell>
               </TableRow>
             ) : null}
 
             {checking ? (
               <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  Loading overstaffing results...
+                <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  載入超編結果中...
                 </TableCell>
               </TableRow>
             ) : null}

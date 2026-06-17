@@ -1,5 +1,5 @@
 import { weeklyScheduleApi } from '../api/weeklyScheduleApi';
-import type { WeeklySchedulePayload } from '../types/weeklySchedule';
+import type { WeeklySchedule, WeeklySchedulePayload } from '../types/weeklySchedule';
 
 export const weeklyScheduleService = {
   getWeeklySchedules() {
@@ -12,6 +12,10 @@ export const weeklyScheduleService = {
 
   updateWeeklySchedule(id: number, payload: WeeklySchedulePayload) {
     return weeklyScheduleApi.update(id, payload);
+  },
+
+  publishWeeklySchedule(schedule: WeeklySchedule) {
+    return weeklyScheduleApi.publishWeeklySchedule(schedule);
   },
 
   deleteWeeklySchedule(id: number) {

@@ -3,10 +3,20 @@ import {
   Box,
   Checkbox,
   CircularProgress,
+  FormControl,
   FormControlLabel,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Snackbar,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from '@mui/material';
@@ -15,7 +25,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { employeeService } from '../services/employeeService';
 import { monthlyLeaveService } from '../services/monthlyLeaveService';
 import type { Employee } from '../types/employee';
-import type { MonthlyLeave } from '../types/monthlyLeave';
+import type { LeaveType, MonthlyLeave, MonthlyLeaveSummary } from '../types/monthlyLeave';
+import { getActiveEmployees } from '../utils/employeeFilters';
+import { getFixedShiftLabel } from '../utils/employeeLabels';
+import { sortEmployeesBySortOrder } from '../utils/employeeSort';
+import {
+  defaultLeaveType,
+  getLeaveTypeLabel,
+  leaveTypeOptions,
+  normalizeLeaveType,
+} from '../utils/leaveType';
 
 type SnackbarState = {
   open: boolean;
@@ -23,21 +42,14 @@ type SnackbarState = {
   severity: 'success' | 'error';
 };
 
-const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const jobTitleOrder: Record<string, number> = {
-  副理: 1,
-  會計: 2,
-  主任: 3,
-  早班正職: 4,
-  早班正職人員: 4,
-  組長: 5,
-  總務: 6,
-  放映師: 7,
-  晚班正職: 8,
-  晚班正職人員: 8,
-  正職清潔: 9,
-  晚班清潔: 10,
+type MonthlyLeaveSummaryRow = MonthlyLeaveSummary & {
+  regularLeaveDays: number;
+  annualLeaveDays: number;
+  totalLeaveDays: number;
+  leaveDateLabels: string[];
 };
+
+const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function getErrorMessage(error: unknown) {
   if (
@@ -94,11 +106,18 @@ function getMonthRange(monthValue: string) {
   };
 }
 
+function getYearMonth(monthValue: string) {
+  const [year, month] = monthValue.split('-').map(Number);
+
+  return { year, month };
+}
+
 function getCalendarCells(monthValue: string) {
   const [year, month] = monthValue.split('-').map(Number);
   const firstDay = new Date(year, month - 1, 1);
   const lastDay = new Date(year, month, 0);
-  const cells: Array<string | null> = Array.from({ length: firstDay.getDay() }, () => null);
+  const firstMondayIndex = (firstDay.getDay() + 6) % 7;
+  const cells: Array<string | null> = Array.from({ length: firstMondayIndex }, () => null);
 
   for (let day = 1; day <= lastDay.getDate(); day += 1) {
     cells.push(formatDateValue(new Date(year, month - 1, day)));
@@ -112,42 +131,62 @@ function getCalendarCells(monthValue: string) {
 }
 
 function formatEmployeeLabel(employee: Employee) {
-  const shiftLabel =
-    employee.fixedShiftType === 'MORNING'
-      ? '早班'
-      : employee.fixedShiftType === 'EVENING'
-        ? '晚班'
-        : '';
+  const shiftLabel = getFixedShiftLabel(employee.fixedShiftType);
 
-  return shiftLabel
+  return shiftLabel !== '-'
     ? `${employee.name}（${employee.jobTitle}｜${shiftLabel}）`
     : `${employee.name}（${employee.jobTitle}）`;
 }
 
-function isMonthlyLeaveEligibleEmployee(employee: Employee) {
-  return (
-    employee.jobTitle !== '副理'
-    && (employee.employeeType === 'FULL_TIME' || employee.employeeType === 'CLEANER')
-  );
-}
+function formatSummaryDate(date: string) {
+  const [, month, day] = date.split('-');
 
-function sortEmployees(firstEmployee: Employee, secondEmployee: Employee) {
-  const firstOrder = jobTitleOrder[firstEmployee.jobTitle] ?? 999;
-  const secondOrder = jobTitleOrder[secondEmployee.jobTitle] ?? 999;
-
-  if (firstOrder !== secondOrder) {
-    return firstOrder - secondOrder;
+  if (!month || !day) {
+    return date;
   }
 
-  return firstEmployee.id - secondEmployee.id;
+  return `${month}/${day}`;
 }
 
-function sortLeavesByEmployee(firstLeave: MonthlyLeave, secondLeave: MonthlyLeave) {
-  return sortEmployees(firstLeave.employee, secondLeave.employee);
+function formatSummaryLeaveDate(leave: MonthlyLeave) {
+  return `${formatSummaryDate(leave.leaveDate)} (${getLeaveTypeLabel(
+    leave.leaveType,
+    'management',
+  )})`;
+}
+
+function requiresMonthlyLeave(employee: Employee) {
+  return employee.requiresMonthlyLeave === true;
+}
+
+function filterLeavesByEmployeeIds(leaves: MonthlyLeave[], employeeIds: Set<number>) {
+  return leaves.filter((leave) => employeeIds.has(leave.employee.id));
+}
+
+function filterSummaryByEmployeeIds(summary: MonthlyLeaveSummary[], employeeIds: Set<number>) {
+  return summary.filter((item) => employeeIds.has(item.employeeId));
+}
+
+function sortLeavesByEmployee(leaves: MonthlyLeave[]) {
+  const employeeOrder = new Map(
+    sortEmployeesBySortOrder(leaves.map((leave) => leave.employee))
+      .map((employee, index) => [employee.id, index]),
+  );
+
+  return [...leaves].sort((firstLeave, secondLeave) => {
+    const firstOrder = employeeOrder.get(firstLeave.employee.id) ?? Number.MAX_SAFE_INTEGER;
+    const secondOrder = employeeOrder.get(secondLeave.employee.id) ?? Number.MAX_SAFE_INTEGER;
+
+    if (firstOrder !== secondOrder) {
+      return firstOrder - secondOrder;
+    }
+
+    return firstLeave.id - secondLeave.id;
+  });
 }
 
 function getShiftColumnLeaves(leaves: MonthlyLeave[]) {
-  const sortedLeaves = [...leaves].sort(sortLeavesByEmployee);
+  const sortedLeaves = sortLeavesByEmployee(leaves);
 
   return {
     morningLeaves: sortedLeaves.filter((leave) => leave.employee.fixedShiftType !== 'EVENING'),
@@ -160,21 +199,23 @@ export default function MonthlyLeavePage() {
   const [selectedDate, setSelectedDate] = useState(() => getMonthRange(getCurrentMonthValue()).startDate);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [monthLeaves, setMonthLeaves] = useState<MonthlyLeave[]>([]);
+  const [monthlyLeaveSummary, setMonthlyLeaveSummary] = useState<MonthlyLeaveSummary[]>([]);
   const [selectedDateLeaves, setSelectedDateLeaves] = useState<MonthlyLeave[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingSummary, setLoadingSummary] = useState(false);
   const [loadingSelectedDate, setLoadingSelectedDate] = useState(false);
   const [savingEmployeeIds, setSavingEmployeeIds] = useState<Set<number>>(() => new Set());
+  const [leaveTypeSelections, setLeaveTypeSelections] = useState<Record<number, LeaveType>>({});
   const [error, setError] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({
     open: false,
     message: '',
     severity: 'success',
   });
 
-  const eligibleEmployees = useMemo(() => {
-    return employees
-      .filter(isMonthlyLeaveEligibleEmployee)
-      .sort(sortEmployees);
+  const monthlyLeaveEmployees = useMemo(() => {
+    return sortEmployeesBySortOrder(employees.filter(requiresMonthlyLeave));
   }, [employees]);
 
   const calendarCells = useMemo(() => getCalendarCells(monthValue), [monthValue]);
@@ -182,7 +223,7 @@ export default function MonthlyLeavePage() {
   const monthLeavesByDate = useMemo(() => {
     const groupedLeaves = new Map<string, MonthlyLeave[]>();
 
-    monthLeaves.filter((leave) => isMonthlyLeaveEligibleEmployee(leave.employee)).forEach((leave) => {
+    monthLeaves.filter((leave) => requiresMonthlyLeave(leave.employee)).forEach((leave) => {
       const leaves = groupedLeaves.get(leave.leaveDate) ?? [];
       leaves.push(leave);
       groupedLeaves.set(leave.leaveDate, leaves);
@@ -195,6 +236,42 @@ export default function MonthlyLeavePage() {
     return new Map(selectedDateLeaves.map((leave) => [leave.employee.id, leave]));
   }, [selectedDateLeaves]);
 
+  const monthlyLeaveSummaryRows = useMemo<MonthlyLeaveSummaryRow[]>(() => {
+    const leavesByEmployeeId = new Map<number, MonthlyLeave[]>();
+
+    monthLeaves.forEach((leave) => {
+      const leaves = leavesByEmployeeId.get(leave.employee.id) ?? [];
+      leaves.push(leave);
+      leavesByEmployeeId.set(leave.employee.id, leaves);
+    });
+
+    return monthlyLeaveSummary.map((summary) => {
+      const leaves = [...(leavesByEmployeeId.get(summary.employeeId) ?? [])].sort(
+        (firstLeave, secondLeave) => firstLeave.leaveDate.localeCompare(secondLeave.leaveDate),
+      );
+      const regularLeaveDays = leaves.length > 0
+        ? leaves.filter((leave) => normalizeLeaveType(leave.leaveType) === 'REGULAR_LEAVE').length
+        : summary.regularLeaveDays ?? summary.leaveDays;
+      const annualLeaveDays = leaves.length > 0
+        ? leaves.filter((leave) => normalizeLeaveType(leave.leaveType) === 'ANNUAL_LEAVE').length
+        : summary.annualLeaveDays ?? 0;
+      const totalLeaveDays = leaves.length > 0
+        ? regularLeaveDays + annualLeaveDays
+        : summary.totalLeaveDays ?? regularLeaveDays + annualLeaveDays;
+      const leaveDateLabels = leaves.length > 0
+        ? leaves.map(formatSummaryLeaveDate)
+        : summary.leaveDates.map(formatSummaryDate);
+
+      return {
+        ...summary,
+        regularLeaveDays,
+        annualLeaveDays,
+        totalLeaveDays,
+        leaveDateLabels,
+      };
+    });
+  }, [monthLeaves, monthlyLeaveSummary]);
+
   const loadMonthData = useCallback(async (targetMonth: string) => {
     setLoading(true);
     setError(null);
@@ -205,8 +282,11 @@ export default function MonthlyLeavePage() {
         employeeService.getEmployees(),
         monthlyLeaveService.getMonthlyLeavesByRange(range.startDate, range.endDate),
       ]);
-      setEmployees(employeeData);
-      setMonthLeaves(leaveData);
+      const activeEmployees = getActiveEmployees(employeeData);
+      const activeEmployeeIds = new Set(activeEmployees.map((employee) => employee.id));
+
+      setEmployees(activeEmployees);
+      setMonthLeaves(filterLeavesByEmployeeIds(leaveData, activeEmployeeIds));
     } catch (loadError) {
       setError(getErrorMessage(loadError));
     } finally {
@@ -220,7 +300,7 @@ export default function MonthlyLeavePage() {
 
     try {
       const leaves = await monthlyLeaveService.getMonthlyLeavesByRange(date, date);
-      setSelectedDateLeaves(leaves);
+      setSelectedDateLeaves(leaves.filter((leave) => leave.employee.isActive));
     } catch (loadError) {
       setError(getErrorMessage(loadError));
     } finally {
@@ -228,15 +308,38 @@ export default function MonthlyLeavePage() {
     }
   }, []);
 
+  const loadMonthlyLeaveSummary = useCallback(async (targetMonth: string) => {
+    setLoadingSummary(true);
+    setSummaryError(null);
+
+    try {
+      const { year, month } = getYearMonth(targetMonth);
+      const [employeeData, summary] = await Promise.all([
+        employeeService.getEmployees(),
+        monthlyLeaveService.getMonthlyLeaveSummary(year, month),
+      ]);
+      const activeEmployeeIds = new Set(
+        getActiveEmployees(employeeData).map((employee) => employee.id),
+      );
+
+      setMonthlyLeaveSummary(filterSummaryByEmployeeIds(summary, activeEmployeeIds));
+    } catch (loadError) {
+      setSummaryError(getErrorMessage(loadError));
+    } finally {
+      setLoadingSummary(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       void loadMonthData(monthValue);
+      void loadMonthlyLeaveSummary(monthValue);
     }, 0);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [loadMonthData, monthValue]);
+  }, [loadMonthData, loadMonthlyLeaveSummary, monthValue]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -248,20 +351,30 @@ export default function MonthlyLeavePage() {
     };
   }, [loadSelectedDateLeaves, selectedDate]);
 
+  const handleSelectedDateChange = (date: string) => {
+    setSelectedDate(date);
+    setLeaveTypeSelections({});
+  };
+
   const handleMonthChange = (event: ChangeEvent<HTMLInputElement>) => {
     const nextMonth = event.target.value;
     setMonthValue(nextMonth);
-    setSelectedDate(getMonthRange(nextMonth).startDate);
+    handleSelectedDateChange(getMonthRange(nextMonth).startDate);
   };
 
   const handleToggleLeave = async (employee: Employee, checked: boolean) => {
     const existingLeave = selectedLeaveByEmployeeId.get(employee.id);
+    const selectedLeaveType = leaveTypeSelections[employee.id] ?? defaultLeaveType;
 
     setSavingEmployeeIds((current) => new Set(current).add(employee.id));
 
     try {
       if (checked && !existingLeave) {
-        const createdLeave = await monthlyLeaveService.createMonthlyLeave(employee.id, selectedDate);
+        const createdLeave = await monthlyLeaveService.createMonthlyLeave(
+          employee.id,
+          selectedDate,
+          selectedLeaveType,
+        );
         setSelectedDateLeaves((current) => [...current, createdLeave]);
         setMonthLeaves((current) => [...current, createdLeave]);
       }
@@ -279,6 +392,59 @@ export default function MonthlyLeavePage() {
         message: '月休已更新',
         severity: 'success',
       });
+      await loadMonthlyLeaveSummary(monthValue);
+    } catch (saveError) {
+      setSnackbar({
+        open: true,
+        message: getErrorMessage(saveError),
+        severity: 'error',
+      });
+    } finally {
+      setSavingEmployeeIds((current) => {
+        const next = new Set(current);
+        next.delete(employee.id);
+        return next;
+      });
+    }
+  };
+
+  const replaceMonthlyLeave = (updatedLeave: MonthlyLeave) => {
+    setSelectedDateLeaves((current) =>
+      current.map((leave) => (leave.id === updatedLeave.id ? updatedLeave : leave)),
+    );
+    setMonthLeaves((current) =>
+      current.map((leave) => (leave.id === updatedLeave.id ? updatedLeave : leave)),
+    );
+  };
+
+  const handleLeaveTypeChange = async (employee: Employee, leaveType: LeaveType) => {
+    const existingLeave = selectedLeaveByEmployeeId.get(employee.id);
+
+    setLeaveTypeSelections((current) => ({
+      ...current,
+      [employee.id]: leaveType,
+    }));
+
+    if (!existingLeave || normalizeLeaveType(existingLeave.leaveType) === leaveType) {
+      return;
+    }
+
+    setSavingEmployeeIds((current) => new Set(current).add(employee.id));
+
+    try {
+      const updatedLeave = await monthlyLeaveService.updateMonthlyLeave(existingLeave.id, {
+        employeeId: employee.id,
+        leaveDate: existingLeave.leaveDate,
+        leaveType,
+        note: existingLeave.note,
+      });
+      replaceMonthlyLeave(updatedLeave);
+      setSnackbar({
+        open: true,
+        message: '假別已更新',
+        severity: 'success',
+      });
+      await loadMonthlyLeaveSummary(monthValue);
     } catch (saveError) {
       setSnackbar({
         open: true,
@@ -306,15 +472,15 @@ export default function MonthlyLeavePage() {
       >
         <Box>
           <Typography variant="h4" component="h2">
-            Monthly Leave Management
+            月休管理
           </Typography>
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            Set monthly leave days for full-time and cleaning employees.
+            設定需要月休管理員工的月休日期。
           </Typography>
         </Box>
 
         <TextField
-          label="Month"
+          label="月份"
           type="month"
           value={monthValue}
           onChange={handleMonthChange}
@@ -380,13 +546,13 @@ export default function MonthlyLeavePage() {
                   tabIndex={date ? 0 : undefined}
                   onClick={() => {
                     if (date) {
-                      setSelectedDate(date);
+                      handleSelectedDateChange(date);
                     }
                   }}
                   onKeyDown={(event) => {
                     if (date && (event.key === 'Enter' || event.key === ' ')) {
                       event.preventDefault();
-                      setSelectedDate(date);
+                      handleSelectedDateChange(date);
                     }
                   }}
                   sx={{
@@ -424,7 +590,7 @@ export default function MonthlyLeavePage() {
                                 noWrap
                                 sx={{ minWidth: 0, lineHeight: 1.25 }}
                               >
-                                {leave.employee.name}
+                                {leave.employee.name}・{getLeaveTypeLabel(leave.leaveType, 'management')}
                               </Typography>
                             ))}
                           </Stack>
@@ -437,7 +603,7 @@ export default function MonthlyLeavePage() {
                                 noWrap
                                 sx={{ minWidth: 0, lineHeight: 1.25 }}
                               >
-                                {leave.employee.name}
+                                {leave.employee.name}・{getLeaveTypeLabel(leave.leaveType, 'management')}
                               </Typography>
                             ))}
                           </Stack>
@@ -465,37 +631,132 @@ export default function MonthlyLeavePage() {
             {loading || loadingSelectedDate ? (
               <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
                 <CircularProgress size={18} />
-                <Typography color="text.secondary">Loading monthly leaves...</Typography>
+                <Typography color="text.secondary">載入月休資料中...</Typography>
               </Stack>
             ) : null}
 
             <Stack spacing={0.5}>
-              {eligibleEmployees.map((employee) => {
-                const checked = selectedLeaveByEmployeeId.has(employee.id);
+              {monthlyLeaveEmployees.map((employee) => {
+                const existingLeave = selectedLeaveByEmployeeId.get(employee.id);
+                const checked = Boolean(existingLeave);
                 const saving = savingEmployeeIds.has(employee.id);
+                const selectedLeaveType = normalizeLeaveType(
+                  existingLeave?.leaveType ?? leaveTypeSelections[employee.id],
+                );
 
                 return (
-                  <FormControlLabel
+                  <Stack
                     key={employee.id}
-                    control={
-                      <Checkbox
-                        checked={checked}
+                    direction="row"
+                    spacing={1}
+                    sx={{
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={checked}
+                          disabled={saving || loadingSelectedDate}
+                          onChange={(event) =>
+                            void handleToggleLeave(employee, event.target.checked)}
+                        />
+                      }
+                      label={formatEmployeeLabel(employee)}
+                    />
+                    <FormControl size="small" sx={{ minWidth: 96 }}>
+                      <InputLabel id={`leave-type-${employee.id}`}>假別</InputLabel>
+                      <Select
+                        labelId={`leave-type-${employee.id}`}
+                        label="假別"
+                        value={selectedLeaveType}
                         disabled={saving || loadingSelectedDate}
-                        onChange={(event) => void handleToggleLeave(employee, event.target.checked)}
-                      />
-                    }
-                    label={formatEmployeeLabel(employee)}
-                  />
+                        onChange={(event) =>
+                          void handleLeaveTypeChange(
+                            employee,
+                            normalizeLeaveType(event.target.value),
+                          )}
+                      >
+                        {leaveTypeOptions.map((option) => (
+                          <MenuItem key={option.value} value={option.value}>
+                            {option.label}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Stack>
                 );
               })}
             </Stack>
 
-            {!loading && eligibleEmployees.length === 0 ? (
-              <Alert severity="info">No full-time or cleaning employees found.</Alert>
+            {!loading && monthlyLeaveEmployees.length === 0 ? (
+              <Alert severity="info">目前沒有需要月休管理的員工。</Alert>
             ) : null}
           </Stack>
         </Paper>
       </Box>
+
+      <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
+        <Stack spacing={2} sx={{ p: 2 }}>
+          <Box>
+            <Typography variant="h6" component="h3">
+              月休統計
+            </Typography>
+            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+              {monthValue}
+            </Typography>
+          </Box>
+
+          {summaryError ? <Alert severity="error">{summaryError}</Alert> : null}
+
+          {loadingSummary ? (
+            <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+              <CircularProgress size={18} />
+              <Typography color="text.secondary">載入月休統計中...</Typography>
+            </Stack>
+          ) : null}
+        </Stack>
+
+        <TableContainer>
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>姓名</TableCell>
+                <TableCell>職稱</TableCell>
+                <TableCell>月休</TableCell>
+                <TableCell>特休</TableCell>
+                <TableCell>總休假</TableCell>
+                <TableCell>休假日期</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {!loadingSummary && monthlyLeaveSummaryRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                    目前沒有可統計的月休資料
+                  </TableCell>
+                </TableRow>
+              ) : null}
+
+              {monthlyLeaveSummaryRows.map((summary) => (
+                <TableRow key={summary.employeeId} hover>
+                  <TableCell>{summary.employeeName}</TableCell>
+                  <TableCell>{summary.jobTitle}</TableCell>
+                  <TableCell>{summary.regularLeaveDays} 天</TableCell>
+                  <TableCell>{summary.annualLeaveDays} 天</TableCell>
+                  <TableCell>{summary.totalLeaveDays} 天</TableCell>
+                  <TableCell>
+                    {summary.leaveDateLabels.length > 0
+                      ? summary.leaveDateLabels.join('、')
+                      : '尚無休假'}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Paper>
 
       <Snackbar
         open={snackbar.open}

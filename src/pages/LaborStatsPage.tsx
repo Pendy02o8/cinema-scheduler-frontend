@@ -48,7 +48,7 @@ function getErrorMessage(error: unknown) {
     return error.message;
   }
 
-  return 'An unexpected error occurred.';
+  return '發生未預期的錯誤。';
 }
 
 function getMonthStart() {
@@ -124,17 +124,17 @@ export default function LaborStatsPage() {
     event?.preventDefault();
 
     if (!formValues.startDate || !formValues.endDate) {
-      setError('Start date and end date are required.');
+      setError('開始日期與結束日期為必填。');
       return;
     }
 
     if (formValues.startDate > formValues.endDate) {
-      setError('Start date cannot be after end date.');
+      setError('開始日期不能晚於結束日期。');
       return;
     }
 
     if (formValues.mode === 'employee' && !formValues.employeeId) {
-      setError('Employee is required when querying a single employee.');
+      setError('查詢單一員工時必須選擇員工。');
       return;
     }
 
@@ -178,10 +178,10 @@ export default function LaborStatsPage() {
       >
         <Box>
           <Typography variant="h4" component="h2">
-            Work Hour Statistics
+            工時統計
           </Typography>
           <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-            Query employee work hour summaries by date range.
+            依週排或日期區間查詢員工工時統計。
           </Typography>
         </Box>
 
@@ -191,7 +191,7 @@ export default function LaborStatsPage() {
           onClick={() => void loadReferenceData()}
           disabled={loading || querying}
         >
-          Refresh Data
+          重新整理
         </Button>
       </Stack>
 
@@ -205,10 +205,10 @@ export default function LaborStatsPage() {
             sx={{ alignItems: { xs: 'stretch', md: 'center' } }}
           >
             <FormControl sx={{ minWidth: { xs: '100%', md: 260 } }}>
-              <InputLabel id="work-hour-week-label">Weekly Schedule</InputLabel>
+              <InputLabel id="work-hour-week-label">週排班</InputLabel>
               <Select
                 labelId="work-hour-week-label"
-                label="Weekly Schedule"
+                label="週排班"
                 value={formValues.weeklyScheduleId}
                 onChange={(event) => {
                   const weeklyScheduleId = event.target.value;
@@ -224,20 +224,20 @@ export default function LaborStatsPage() {
                   }));
                 }}
               >
-                <MenuItem value="">Custom Date Range</MenuItem>
+                <MenuItem value="">自訂日期範圍</MenuItem>
                 {weeklySchedules.map((schedule) => (
                   <MenuItem key={schedule.id} value={String(schedule.id)}>
-                    {schedule.weekStartDate} to {schedule.weekEndDate}
+                    {schedule.weekStartDate} 至 {schedule.weekEndDate}
                   </MenuItem>
                 ))}
               </Select>
             </FormControl>
 
             <FormControl sx={{ minWidth: { xs: '100%', md: 180 } }}>
-              <InputLabel id="work-hour-mode-label">Scope</InputLabel>
+              <InputLabel id="work-hour-mode-label">查詢範圍</InputLabel>
               <Select
                 labelId="work-hour-mode-label"
-                label="Scope"
+                label="查詢範圍"
                 value={formValues.mode}
                 onChange={(event) =>
                   setFormValues((current) => ({
@@ -246,8 +246,8 @@ export default function LaborStatsPage() {
                   }))
                 }
               >
-                <MenuItem value="all">All Employees</MenuItem>
-                <MenuItem value="employee">Single Employee</MenuItem>
+                <MenuItem value="all">全部員工</MenuItem>
+                <MenuItem value="employee">單一員工</MenuItem>
               </Select>
             </FormControl>
 
@@ -256,10 +256,10 @@ export default function LaborStatsPage() {
               required={formValues.mode === 'employee'}
               sx={{ minWidth: { xs: '100%', md: 260 } }}
             >
-              <InputLabel id="work-hour-employee-label">Employee</InputLabel>
+              <InputLabel id="work-hour-employee-label">員工</InputLabel>
               <Select
                 labelId="work-hour-employee-label"
-                label="Employee"
+                label="員工"
                 value={formValues.employeeId}
                 onChange={(event) =>
                   setFormValues((current) => ({
@@ -270,14 +270,14 @@ export default function LaborStatsPage() {
               >
                 {employees.map((employee) => (
                   <MenuItem key={employee.id} value={String(employee.id)}>
-                    {employee.id} - {employee.name}
+                    {employee.name}
                   </MenuItem>
                 ))}
               </Select>
             </FormControl>
 
             <TextField
-              label="Start Date"
+              label="開始日期"
               type="date"
               value={formValues.startDate}
               onChange={handleDateChange('startDate')}
@@ -285,7 +285,7 @@ export default function LaborStatsPage() {
               slotProps={{ inputLabel: { shrink: true } }}
             />
             <TextField
-              label="End Date"
+              label="結束日期"
               type="date"
               value={formValues.endDate}
               onChange={handleDateChange('endDate')}
@@ -300,7 +300,7 @@ export default function LaborStatsPage() {
               disabled={querying || loading}
               sx={{ minWidth: 140 }}
             >
-              {querying ? 'Querying...' : 'Query'}
+              {querying ? '查詢中...' : '查詢'}
             </Button>
           </Stack>
         </Box>
@@ -310,10 +310,9 @@ export default function LaborStatsPage() {
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell>Employee</TableCell>
-              <TableCell>Period</TableCell>
-              <TableCell align="right">Hours</TableCell>
-              <TableCell>Backend Summary</TableCell>
+              <TableCell>員工</TableCell>
+              <TableCell>期間</TableCell>
+              <TableCell align="right">時數</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -322,10 +321,9 @@ export default function LaborStatsPage() {
                   <TableRow key={summary.rawText} hover>
                     <TableCell>{summary.employeeName}</TableCell>
                     <TableCell>
-                      {formValues.startDate} to {formValues.endDate}
+                      {formValues.startDate} 至 {formValues.endDate}
                     </TableCell>
                     <TableCell align="right">{summary.hours}</TableCell>
-                    <TableCell>{summary.rawText}</TableCell>
                   </TableRow>
                 ))
               : null}
@@ -334,11 +332,10 @@ export default function LaborStatsPage() {
               <TableRow hover>
                 <TableCell>{employeeSummary.employeeName}</TableCell>
                 <TableCell>
-                  {employeeSummary.startDate || formValues.startDate} to{' '}
+                  {employeeSummary.startDate || formValues.startDate} 至{' '}
                   {employeeSummary.endDate || formValues.endDate}
                 </TableCell>
                 <TableCell align="right">{employeeSummary.hours}</TableCell>
-                <TableCell>{employeeSummary.rawText}</TableCell>
               </TableRow>
             ) : null}
 
@@ -346,16 +343,16 @@ export default function LaborStatsPage() {
             ((formValues.mode === 'all' && allSummaries.length === 0) ||
               (formValues.mode === 'employee' && !employeeSummary)) ? (
               <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  No work hour summary loaded.
+                <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  尚未載入工時統計。
                 </TableCell>
               </TableRow>
             ) : null}
 
             {querying ? (
               <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  Loading work hour summary...
+                <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  載入工時統計中...
                 </TableCell>
               </TableRow>
             ) : null}

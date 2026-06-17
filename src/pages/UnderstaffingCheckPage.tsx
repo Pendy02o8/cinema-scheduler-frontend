@@ -41,7 +41,7 @@ function getErrorMessage(error: unknown) {
     return error.message;
   }
 
-  return 'An unexpected error occurred.';
+  return '發生未預期的錯誤。';
 }
 
 function getToday() {
@@ -127,18 +127,18 @@ export default function UnderstaffingCheckPage() {
     event.preventDefault();
 
     if (formValues.mode === 'date' && !formValues.date) {
-      setError('Date is required.');
+      setError('日期為必填。');
       return;
     }
 
     if (formValues.mode === 'week') {
       if (!formValues.weeklyScheduleId) {
-        setError('Weekly schedule is required.');
+        setError('週排班為必填。');
         return;
       }
 
       if (formValues.startDate > formValues.endDate) {
-        setError('Start date cannot be after end date.');
+        setError('開始日期不能晚於結束日期。');
         return;
       }
     }
@@ -167,10 +167,10 @@ export default function UnderstaffingCheckPage() {
     <Stack spacing={3}>
       <Box>
         <Typography variant="h4" component="h2">
-          Understaffing Check
+          缺人檢查
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-          Display backend understaffing validation results and missing periods.
+          顯示後端缺人檢查結果與缺少人力的時段。
         </Typography>
       </Box>
 
@@ -184,10 +184,10 @@ export default function UnderstaffingCheckPage() {
             sx={{ alignItems: { xs: 'stretch', md: 'center' } }}
           >
             <FormControl sx={{ minWidth: { xs: '100%', md: 160 } }}>
-              <InputLabel id="understaffing-mode-label">Scope</InputLabel>
+              <InputLabel id="understaffing-mode-label">檢查範圍</InputLabel>
               <Select
                 labelId="understaffing-mode-label"
-                label="Scope"
+                label="檢查範圍"
                 value={formValues.mode}
                 onChange={(event) =>
                   setFormValues((current) => ({
@@ -196,14 +196,14 @@ export default function UnderstaffingCheckPage() {
                   }))
                 }
               >
-                <MenuItem value="date">Single Date</MenuItem>
-                <MenuItem value="week">Weekly Schedule</MenuItem>
+                <MenuItem value="date">單日</MenuItem>
+                <MenuItem value="week">週排班</MenuItem>
               </Select>
             </FormControl>
 
             {formValues.mode === 'date' ? (
               <TextField
-                label="Date"
+                label="日期"
                 type="date"
                 value={formValues.date}
                 onChange={handleDateChange('date')}
@@ -213,10 +213,10 @@ export default function UnderstaffingCheckPage() {
             ) : (
               <>
                 <FormControl sx={{ minWidth: { xs: '100%', md: 280 } }} required>
-                  <InputLabel id="understaffing-week-label">Weekly Schedule</InputLabel>
+                  <InputLabel id="understaffing-week-label">週排班</InputLabel>
                   <Select
                     labelId="understaffing-week-label"
-                    label="Weekly Schedule"
+                    label="週排班"
                     value={formValues.weeklyScheduleId}
                     onChange={(event) => {
                       const weeklyScheduleId = event.target.value;
@@ -234,13 +234,13 @@ export default function UnderstaffingCheckPage() {
                   >
                     {weeklySchedules.map((schedule) => (
                       <MenuItem key={schedule.id} value={String(schedule.id)}>
-                        {schedule.weekStartDate} to {schedule.weekEndDate}
+                        {schedule.weekStartDate} 至 {schedule.weekEndDate}
                       </MenuItem>
                     ))}
                   </Select>
                 </FormControl>
                 <TextField
-                  label="Start Date"
+                  label="開始日期"
                   type="date"
                   value={formValues.startDate}
                   onChange={handleDateChange('startDate')}
@@ -249,7 +249,7 @@ export default function UnderstaffingCheckPage() {
                   slotProps={{ inputLabel: { shrink: true } }}
                 />
                 <TextField
-                  label="End Date"
+                  label="結束日期"
                   type="date"
                   value={formValues.endDate}
                   onChange={handleDateChange('endDate')}
@@ -267,24 +267,23 @@ export default function UnderstaffingCheckPage() {
               disabled={checking || loadingSchedules}
               sx={{ minWidth: 140 }}
             >
-              {checking ? 'Checking...' : 'Check'}
+              {checking ? '檢查中...' : '檢查'}
             </Button>
           </Stack>
         </Box>
       </Paper>
 
       {hasChecked && results.length === 0 ? (
-        <Alert severity="success">No understaffing results found.</Alert>
+        <Alert severity="success">沒有少編結果。</Alert>
       ) : null}
 
       <TableContainer component={Paper} variant="outlined">
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Affected Position</TableCell>
-              <TableCell>Missing Period</TableCell>
-              <TableCell>Backend Result</TableCell>
+              <TableCell>日期</TableCell>
+              <TableCell>受影響崗位</TableCell>
+              <TableCell>缺少時段</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -295,22 +294,21 @@ export default function UnderstaffingCheckPage() {
                   <Chip label={result.position} color="warning" variant="outlined" size="small" />
                 </TableCell>
                 <TableCell>{result.period}</TableCell>
-                <TableCell>{result.rawText}</TableCell>
               </TableRow>
             ))}
 
             {!checking && results.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  No understaffing check loaded.
+                <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  尚未載入少編檢查。
                 </TableCell>
               </TableRow>
             ) : null}
 
             {checking ? (
               <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  Loading understaffing results...
+                <TableCell colSpan={3} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  載入少編結果中...
                 </TableCell>
               </TableRow>
             ) : null}

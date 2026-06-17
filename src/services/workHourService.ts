@@ -6,7 +6,9 @@ import type {
 } from '../types/workHour';
 
 function parseAllSummary(summary: string): WorkHourSummary {
-  const match = summary.match(/^(.*?)[：:]\s*([\d.]+)\s*小時/);
+  const match =
+    summary.match(/^(.*?)\s+\d{4}-\d{2}-\d{2}~\d{4}-\d{2}-\d{2}\s+工時[：:]\s*([\d.]+)\s*小時/)
+    ?? summary.match(/^(.*?)[：:]\s*([\d.]+)\s*小時/);
 
   if (!match) {
     return {
@@ -27,6 +29,18 @@ function parseSingleSummary(summary: string): SingleEmployeeWorkHourSummary {
   const match = summary.match(/^(.*?)\s+(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})\s+工時[：:]\s*([\d.]+)\s*小時/);
 
   if (!match) {
+    const compactMatch = summary.match(/^(.*?)[：:]\s*([\d.]+)\s*小時/);
+
+    if (compactMatch) {
+      return {
+        employeeName: compactMatch[1],
+        startDate: '',
+        endDate: '',
+        hours: compactMatch[2],
+        rawText: summary,
+      };
+    }
+
     return {
       employeeName: '-',
       startDate: '',

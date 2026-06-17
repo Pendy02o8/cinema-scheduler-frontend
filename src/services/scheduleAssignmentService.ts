@@ -25,4 +25,8 @@ export const scheduleAssignmentService = {
   generateFixedAssignments(weeklyScheduleId: number, startDate: string, endDate: string) {
     return scheduleAssignmentApi.generateFixed(weeklyScheduleId, startDate, endDate);
   },
+
+  getScheduleAssignmentChangesByWeeklyScheduleId(weeklyScheduleId: number) {
+    return scheduleAssignmentApi.getScheduleAssignmentChangesByWeeklyScheduleId(weeklyScheduleId);
+  },
 };

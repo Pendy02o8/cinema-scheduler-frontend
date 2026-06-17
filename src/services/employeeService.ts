@@ -1,5 +1,5 @@
 import { employeeApi } from '../api/employeeApi';
-import type { EmployeePayload } from '../types/employee';
+import type { EmployeePayload, EmployeeSortOrderPayload } from '../types/employee';
 
 export const employeeService = {
   getEmployees() {
@@ -16,6 +16,10 @@ export const employeeService = {
 
   updateEmployee(id: number, payload: EmployeePayload) {
     return employeeApi.update(id, payload);
+  },
+
+  updateEmployeeSortOrder(payload: EmployeeSortOrderPayload[]) {
+    return employeeApi.updateSortOrder(payload);
   },
 
   deleteEmployee(id: number) {

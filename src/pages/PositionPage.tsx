@@ -13,6 +13,7 @@ import {
   DialogTitle,
   FormControlLabel,
   IconButton,
+  MenuItem,
   Paper,
   Snackbar,
   Stack,
@@ -59,12 +60,25 @@ const emptyFormValues: PositionFormValues = {
 const deletePositionFallbackMessage = '此崗位已有班表或需求設定資料，無法刪除。';
 const deletePositionWithAssignmentsMessage = '此崗位已有班表資料，請先移除相關排班後再刪除。';
 
+const hourOptions = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0'));
+const startMinuteOptions = ['20', '50'];
+const endMinuteOptions = ['00', '30'];
+
 function toTimeInputValue(time: string) {
   return time.slice(0, 5);
 }
 
 function toApiTimeValue(time: string) {
   return time.length === 5 ? `${time}:00` : time.slice(0, 8);
+}
+
+function getTimeHour(time: string) {
+  return time.slice(0, 2);
+}
+
+function getTimeMinute(time: string, allowedMinutes: string[]) {
+  const minute = time.slice(3, 5);
+  return allowedMinutes.includes(minute) ? minute : '';
 }
 
 function getRequirementKey(requirement: PositionRequirement) {
@@ -249,14 +263,23 @@ export default function PositionPage() {
   const handleRequirementTimeChange = (
     requirementKey: string,
     field: keyof RequirementTimeValues,
+    part: 'hour' | 'minute',
     value: string,
+    defaultMinute: string,
   ) => {
     setRequirementTimeValues((current) => ({
       ...current,
-      [requirementKey]: {
-        ...(current[requirementKey] ?? { startTime: '', endTime: '' }),
-        [field]: value,
-      },
+      [requirementKey]: (() => {
+        const currentValues = current[requirementKey] ?? { startTime: '', endTime: '' };
+        const currentTime = currentValues[field];
+        const hour = part === 'hour' ? value : getTimeHour(currentTime) || '00';
+        const minute = part === 'minute' ? value : currentTime.slice(3, 5) || defaultMinute;
+
+        return {
+          ...currentValues,
+          [field]: `${hour}:${minute}`,
+        };
+      })(),
     }));
   };
 
@@ -265,6 +288,14 @@ export default function PositionPage() {
 
     if (!timeValues?.startTime || !timeValues.endTime) {
       setError('開始時間與結束時間為必填。');
+      return;
+    }
+
+    if (
+      !startMinuteOptions.includes(timeValues.startTime.slice(3, 5))
+      || !endMinuteOptions.includes(timeValues.endTime.slice(3, 5))
+    ) {
+      setError('開始時間分鐘只能選 20 或 50，結束時間分鐘只能選 00 或 30。');
       return;
     }
 
@@ -513,38 +544,116 @@ export default function PositionPage() {
                   <TableRow key={row.key} hover>
                     <TableCell>{row.position.name}</TableCell>
                     <TableCell>
-                      <TextField
-                        label="開始時間"
-                        type="time"
-                        size="small"
-                        value={timeValues.startTime}
-                        onChange={(event) => {
-                          handleRequirementTimeChange(row.key, 'startTime', event.target.value);
-                        }}
-                        disabled={requirementSaving}
-                        slotProps={{
-                          inputLabel: {
-                            shrink: true,
-                          },
-                        }}
-                      />
+                      <Stack direction="row" spacing={1}>
+                        <TextField
+                          label="時"
+                          select
+                          size="small"
+                          value={getTimeHour(timeValues.startTime)}
+                          onChange={(event) => {
+                            handleRequirementTimeChange(
+                              row.key,
+                              'startTime',
+                              'hour',
+                              event.target.value,
+                              '20',
+                            );
+                          }}
+                          disabled={requirementSaving}
+                          sx={{ minWidth: 80 }}
+                        >
+                          <MenuItem value="" disabled>
+                            --
+                          </MenuItem>
+                          {hourOptions.map((hour) => (
+                            <MenuItem key={hour} value={hour}>
+                              {hour}
+                            </MenuItem>
+                          ))}
+                        </TextField>
+                        <TextField
+                          label="分"
+                          select
+                          size="small"
+                          value={getTimeMinute(timeValues.startTime, startMinuteOptions)}
+                          onChange={(event) => {
+                            handleRequirementTimeChange(
+                              row.key,
+                              'startTime',
+                              'minute',
+                              event.target.value,
+                              '20',
+                            );
+                          }}
+                          disabled={requirementSaving}
+                          sx={{ minWidth: 80 }}
+                        >
+                          <MenuItem value="" disabled>
+                            --
+                          </MenuItem>
+                          {startMinuteOptions.map((minute) => (
+                            <MenuItem key={minute} value={minute}>
+                              {minute}
+                            </MenuItem>
+                          ))}
+                        </TextField>
+                      </Stack>
                     </TableCell>
                     <TableCell>
-                      <TextField
-                        label="結束時間"
-                        type="time"
-                        size="small"
-                        value={timeValues.endTime}
-                        onChange={(event) => {
-                          handleRequirementTimeChange(row.key, 'endTime', event.target.value);
-                        }}
-                        disabled={requirementSaving}
-                        slotProps={{
-                          inputLabel: {
-                            shrink: true,
-                          },
-                        }}
-                      />
+                      <Stack direction="row" spacing={1}>
+                        <TextField
+                          label="時"
+                          select
+                          size="small"
+                          value={getTimeHour(timeValues.endTime)}
+                          onChange={(event) => {
+                            handleRequirementTimeChange(
+                              row.key,
+                              'endTime',
+                              'hour',
+                              event.target.value,
+                              '00',
+                            );
+                          }}
+                          disabled={requirementSaving}
+                          sx={{ minWidth: 80 }}
+                        >
+                          <MenuItem value="" disabled>
+                            --
+                          </MenuItem>
+                          {hourOptions.map((hour) => (
+                            <MenuItem key={hour} value={hour}>
+                              {hour}
+                            </MenuItem>
+                          ))}
+                        </TextField>
+                        <TextField
+                          label="分"
+                          select
+                          size="small"
+                          value={getTimeMinute(timeValues.endTime, endMinuteOptions)}
+                          onChange={(event) => {
+                            handleRequirementTimeChange(
+                              row.key,
+                              'endTime',
+                              'minute',
+                              event.target.value,
+                              '00',
+                            );
+                          }}
+                          disabled={requirementSaving}
+                          sx={{ minWidth: 80 }}
+                        >
+                          <MenuItem value="" disabled>
+                            --
+                          </MenuItem>
+                          {endMinuteOptions.map((minute) => (
+                            <MenuItem key={minute} value={minute}>
+                              {minute}
+                            </MenuItem>
+                          ))}
+                        </TextField>
+                      </Stack>
                     </TableCell>
                     <TableCell align="right">
                       <Button

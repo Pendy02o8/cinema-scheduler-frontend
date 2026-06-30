@@ -42,7 +42,7 @@ import type {
 } from '../types/availability';
 import type { Employee } from '../types/employee';
 import type { WeeklySchedule } from '../types/weeklySchedule';
-import { getActiveEmployees } from '../utils/employeeFilters';
+import { getActivePartTimeEmployees } from '../utils/employeeFilters';
 
 type AvailabilityFormValues = {
   employeeId: string;
@@ -166,7 +166,7 @@ export default function AvailabilityPage() {
         employeeService.getEmployees(),
         weeklyScheduleService.getWeeklySchedules(),
       ]);
-      const activeEmployees = getActiveEmployees(employeeData);
+      const activeEmployees = getActivePartTimeEmployees(employeeData);
       const activeEmployeeIds = new Set(activeEmployees.map((employee) => employee.id));
       const selectedEmployeeIsActive =
         !selectedEmployeeId || activeEmployeeIds.has(Number(selectedEmployeeId));
@@ -435,7 +435,7 @@ export default function AvailabilityPage() {
                 </MenuItem>
                 {weeklySchedules.map((schedule) => (
                   <MenuItem key={schedule.id} value={String(schedule.id)}>
-                    第{schedule.id}週 {formatDisplayDate(schedule.weekStartDate)} ~{' '}
+                    {formatDisplayDate(schedule.weekStartDate)} ~{' '}
                     {formatDisplayDate(schedule.weekEndDate)}
                   </MenuItem>
                 ))}

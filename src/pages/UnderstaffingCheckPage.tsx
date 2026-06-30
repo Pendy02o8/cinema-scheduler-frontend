@@ -170,7 +170,7 @@ export default function UnderstaffingCheckPage() {
           缺人檢查
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-          顯示後端缺人檢查結果與缺少人力的時段。
+          查看排班中人力不足的時段與受影響崗位。
         </Typography>
       </Box>
 

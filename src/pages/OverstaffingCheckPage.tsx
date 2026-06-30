@@ -161,7 +161,7 @@ export default function OverstaffingCheckPage() {
           超編檢查
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-          顯示後端超編檢查結果與人力過多的時段。
+          查看排班中人力過多的時段與受影響崗位。
         </Typography>
       </Box>
 

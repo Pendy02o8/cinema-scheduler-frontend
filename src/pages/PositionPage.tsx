@@ -14,6 +14,7 @@ import {
   FormControlLabel,
   IconButton,
   Paper,
+  Snackbar,
   Stack,
   Switch,
   Table,
@@ -28,12 +29,26 @@ import {
 } from '@mui/material';
 import type { ChangeEvent, FormEvent } from 'react';
 import { useCallback, useEffect, useState } from 'react';
+import { positionRequirementService } from '../services/positionRequirementService';
 import { positionService } from '../services/positionService';
+import { scheduleAssignmentService } from '../services/scheduleAssignmentService';
 import type { Position, PositionPayload } from '../types/position';
+import type { PositionRequirement } from '../types/positionRequirement';
 
 type PositionFormValues = {
   name: string;
   isRequired: boolean;
+};
+
+type RequirementTimeValues = {
+  startTime: string;
+  endTime: string;
+};
+
+type RequirementRow = {
+  key: string;
+  position: Position;
+  requirement?: PositionRequirement;
 };
 
 const emptyFormValues: PositionFormValues = {
@@ -42,6 +57,23 @@ const emptyFormValues: PositionFormValues = {
 };
 
 const deletePositionFallbackMessage = '此崗位已有班表或需求設定資料，無法刪除。';
+const deletePositionWithAssignmentsMessage = '此崗位已有班表資料，請先移除相關排班後再刪除。';
+
+function toTimeInputValue(time: string) {
+  return time.slice(0, 5);
+}
+
+function toApiTimeValue(time: string) {
+  return time.length === 5 ? `${time}:00` : time.slice(0, 8);
+}
+
+function getRequirementKey(requirement: PositionRequirement) {
+  return `requirement-${requirement.id}`;
+}
+
+function getMissingRequirementKey(position: Position) {
+  return `position-${position.id}`;
+}
 
 function getResponseErrorMessage(error: unknown) {
   if (
@@ -103,10 +135,16 @@ function getDeletePositionErrorMessage(error: unknown) {
 
 export default function PositionPage() {
   const [positions, setPositions] = useState<Position[]>([]);
+  const [positionRequirements, setPositionRequirements] = useState<PositionRequirement[]>([]);
+  const [requirementTimeValues, setRequirementTimeValues] = useState<Record<string, RequirementTimeValues>>({});
   const [loading, setLoading] = useState(false);
+  const [loadingRequirements, setLoadingRequirements] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingRequirementKey, setSavingRequirementKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [editingPosition, setEditingPosition] = useState<Position | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Position | null>(null);
@@ -127,15 +165,42 @@ export default function PositionPage() {
     }
   }, []);
 
+  const loadPositionRequirements = useCallback(async () => {
+    setLoadingRequirements(true);
+    setError(null);
+
+    try {
+      const data = await positionRequirementService.getPositionRequirements();
+      setPositionRequirements(data);
+      setRequirementTimeValues(
+        data.reduce<Record<string, RequirementTimeValues>>((values, requirement) => {
+          values[getRequirementKey(requirement)] = {
+            startTime: toTimeInputValue(requirement.startTime),
+            endTime: toTimeInputValue(requirement.endTime),
+          };
+          return values;
+        }, {}),
+      );
+    } catch (loadError) {
+      setError(getErrorMessage(loadError));
+    } finally {
+      setLoadingRequirements(false);
+    }
+  }, []);
+
+  const loadPositionManagementData = useCallback(async () => {
+    await Promise.all([loadPositions(), loadPositionRequirements()]);
+  }, [loadPositions, loadPositionRequirements]);
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      void loadPositions();
+      void loadPositionManagementData();
     }, 0);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [loadPositions]);
+  }, [loadPositionManagementData]);
 
   const handleOpenCreate = () => {
     setSuccess(null);
@@ -181,6 +246,62 @@ export default function PositionPage() {
     }));
   };
 
+  const handleRequirementTimeChange = (
+    requirementKey: string,
+    field: keyof RequirementTimeValues,
+    value: string,
+  ) => {
+    setRequirementTimeValues((current) => ({
+      ...current,
+      [requirementKey]: {
+        ...(current[requirementKey] ?? { startTime: '', endTime: '' }),
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSaveRequirement = async (row: RequirementRow) => {
+    const timeValues = requirementTimeValues[row.key];
+
+    if (!timeValues?.startTime || !timeValues.endTime) {
+      setError('開始時間與結束時間為必填。');
+      return;
+    }
+
+    setSavingRequirementKey(row.key);
+    setError(null);
+    setDeleteErrorMessage(null);
+
+    try {
+      const payload = {
+        position: {
+          id: row.position.id,
+        },
+        requiredCount: row.requirement?.requiredCount ?? 1,
+        startTime: toApiTimeValue(timeValues.startTime),
+        endTime: toApiTimeValue(timeValues.endTime),
+      };
+
+      if (row.requirement) {
+        await positionRequirementService.updatePositionRequirement(row.requirement.id, payload);
+      } else {
+        await positionRequirementService.createPositionRequirement(payload);
+      }
+
+      await loadPositionManagementData();
+      setSnackbarMessage('必要崗位需求時段已儲存。');
+      setSnackbarOpen(true);
+    } catch (saveError) {
+      setError(getErrorMessage(saveError));
+    } finally {
+      setSavingRequirementKey(null);
+    }
+  };
+
+  const handleCloseSnackbar = () => {
+    setSnackbarOpen(false);
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -207,7 +328,7 @@ export default function PositionPage() {
       }
 
       setFormOpen(false);
-      await loadPositions();
+      await loadPositionManagementData();
     } catch (saveError) {
       setError(getErrorMessage(saveError));
     } finally {
@@ -226,9 +347,25 @@ export default function PositionPage() {
     setDeleteErrorMessage(null);
 
     try {
+      const linkedAssignments = await scheduleAssignmentService.getScheduleAssignmentsByPosition(
+        deleteTarget.id,
+      );
+      if (linkedAssignments.length > 0) {
+        setDeleteTarget(null);
+        setDeleteErrorMessage(deletePositionWithAssignmentsMessage);
+        return;
+      }
+
+      const linkedRequirement = positionRequirements.find(
+        (requirement) => requirement.position.id === deleteTarget.id,
+      );
+      if (linkedRequirement) {
+        await positionRequirementService.deletePositionRequirement(linkedRequirement.id);
+      }
+
       await positionService.deletePosition(deleteTarget.id);
       setDeleteTarget(null);
-      await loadPositions();
+      await loadPositionManagementData();
       setSuccess('崗位已刪除。');
     } catch (deleteError) {
       setDeleteTarget(null);
@@ -237,6 +374,21 @@ export default function PositionPage() {
       setSaving(false);
     }
   };
+
+  const requirementRows: RequirementRow[] = positions
+    .filter((position) => position.isRequired)
+    .map((position) => {
+      const requirement = positionRequirements.find(
+        (positionRequirement) => positionRequirement.position.id === position.id,
+      );
+
+      return {
+        key: requirement ? getRequirementKey(requirement) : getMissingRequirementKey(position),
+        position,
+        requirement,
+      };
+    });
+  const refreshing = loading || loadingRequirements;
 
   return (
     <Stack spacing={3}>
@@ -260,7 +412,7 @@ export default function PositionPage() {
         <Stack direction="row" spacing={1}>
           <Tooltip title={'\u91cd\u65b0\u6574\u7406\u5d17\u4f4d'}>
             <span>
-              <IconButton onClick={loadPositions} disabled={loading || saving}>
+              <IconButton onClick={loadPositionManagementData} disabled={refreshing || saving}>
                 <RefreshIcon />
               </IconButton>
             </span>
@@ -335,6 +487,101 @@ export default function PositionPage() {
         </Table>
       </TableContainer>
 
+      <Stack spacing={1}>
+        <Typography variant="h6" component="h3">
+          必要崗位需求時段
+        </Typography>
+        <TableContainer component={Paper} variant="outlined">
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>崗位名稱</TableCell>
+                <TableCell>開始時間</TableCell>
+                <TableCell>結束時間</TableCell>
+                <TableCell align="right">操作</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {requirementRows.map((row) => {
+                const timeValues = requirementTimeValues[row.key] ?? {
+                  startTime: row.requirement ? toTimeInputValue(row.requirement.startTime) : '',
+                  endTime: row.requirement ? toTimeInputValue(row.requirement.endTime) : '',
+                };
+                const requirementSaving = savingRequirementKey === row.key;
+
+                return (
+                  <TableRow key={row.key} hover>
+                    <TableCell>{row.position.name}</TableCell>
+                    <TableCell>
+                      <TextField
+                        label="開始時間"
+                        type="time"
+                        size="small"
+                        value={timeValues.startTime}
+                        onChange={(event) => {
+                          handleRequirementTimeChange(row.key, 'startTime', event.target.value);
+                        }}
+                        disabled={requirementSaving}
+                        slotProps={{
+                          inputLabel: {
+                            shrink: true,
+                          },
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <TextField
+                        label="結束時間"
+                        type="time"
+                        size="small"
+                        value={timeValues.endTime}
+                        onChange={(event) => {
+                          handleRequirementTimeChange(row.key, 'endTime', event.target.value);
+                        }}
+                        disabled={requirementSaving}
+                        slotProps={{
+                          inputLabel: {
+                            shrink: true,
+                          },
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell align="right">
+                      <Button
+                        variant="contained"
+                        size="small"
+                        onClick={() => {
+                          void handleSaveRequirement(row);
+                        }}
+                        disabled={requirementSaving || loadingRequirements}
+                      >
+                        {requirementSaving ? '儲存中...' : row.requirement ? '儲存' : '建立'}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+
+              {!loadingRequirements && requirementRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                    目前沒有必要崗位需求設定。
+                  </TableCell>
+                </TableRow>
+              ) : null}
+
+              {loadingRequirements ? (
+                <TableRow>
+                  <TableCell colSpan={4} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                    載入必要崗位需求時段中...
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Stack>
+
       <Dialog open={formOpen} onClose={handleCloseForm} fullWidth maxWidth="sm">
         <Box component="form" onSubmit={handleSubmit}>
           <DialogTitle>{editingPosition ? '編輯崗位' : '新增崗位'}</DialogTitle>
@@ -370,7 +617,8 @@ export default function PositionPage() {
           <Typography sx={{ whiteSpace: 'pre-line' }}>
             {`確定要永久刪除此崗位嗎？
 
-若崗位已有班表或需求設定資料，系統將拒絕刪除。`}
+若崗位只有需求時段設定，會一併刪除需求時段。
+若崗位已有班表資料，系統將拒絕刪除。`}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -399,6 +647,17 @@ export default function PositionPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={3000}
+        onClose={handleCloseSnackbar}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="success" onClose={handleCloseSnackbar} variant="filled">
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
     </Stack>
   );
 }

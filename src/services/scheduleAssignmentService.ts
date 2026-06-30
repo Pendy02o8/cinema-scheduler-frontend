@@ -6,6 +6,26 @@ export const scheduleAssignmentService = {
     return scheduleAssignmentApi.getAll();
   },
 
+  getScheduleAssignment(id: number) {
+    return scheduleAssignmentApi.getById(id);
+  },
+
+  getScheduleAssignmentsByDate(date: string) {
+    return scheduleAssignmentApi.getByDate(date);
+  },
+
+  getScheduleAssignmentsByEmployee(employeeId: number) {
+    return scheduleAssignmentApi.getByEmployee(employeeId);
+  },
+
+  getScheduleAssignmentsByPosition(positionId: number) {
+    return scheduleAssignmentApi.getByPosition(positionId);
+  },
+
+  getScheduleAssignmentsByWeek(startDate: string, endDate: string) {
+    return scheduleAssignmentApi.getByWeek(startDate, endDate);
+  },
+
   createScheduleAssignment(payload: ScheduleAssignmentPayload) {
     return scheduleAssignmentApi.create(payload);
   },

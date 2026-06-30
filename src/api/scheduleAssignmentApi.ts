@@ -2,6 +2,7 @@ import httpClient from './httpClient';
 import type {
   ScheduleAssignment,
   ScheduleAssignmentChange,
+  ScheduleAssignmentMutationResponse,
   ScheduleAssignmentPayload,
   ScheduleAssignmentValidationResult,
 } from '../types/scheduleAssignment';
@@ -24,8 +25,47 @@ export const scheduleAssignmentApi = {
     return response.data;
   },
 
+  async getById(id: number) {
+    const response = await httpClient.get<ScheduleAssignment>(`${scheduleAssignmentPath}/${id}`);
+    return response.data;
+  },
+
+  async getByDate(date: string) {
+    const response = await httpClient.get<ScheduleAssignment[]>(
+      `${scheduleAssignmentPath}/date/${date}`,
+    );
+    return response.data;
+  },
+
+  async getByEmployee(employeeId: number) {
+    const response = await httpClient.get<ScheduleAssignment[]>(
+      `${scheduleAssignmentPath}/employee/${employeeId}`,
+    );
+    return response.data;
+  },
+
+  async getByPosition(positionId: number) {
+    const response = await httpClient.get<ScheduleAssignment[]>(
+      `${scheduleAssignmentPath}/position/${positionId}`,
+    );
+    return response.data;
+  },
+
+  async getByWeek(startDate: string, endDate: string) {
+    const response = await httpClient.get<ScheduleAssignment[]>(`${scheduleAssignmentPath}/week`, {
+      params: {
+        startDate,
+        endDate,
+      },
+    });
+    return response.data;
+  },
+
   async create(payload: ScheduleAssignmentPayload) {
-    const response = await httpClient.post<ScheduleAssignment>(scheduleAssignmentPath, payload);
+    const response = await httpClient.post<ScheduleAssignmentMutationResponse>(
+      scheduleAssignmentPath,
+      payload,
+    );
     return response.data;
   },
 
@@ -54,7 +94,7 @@ export const scheduleAssignmentApi = {
   },
 
   async update(id: number, payload: ScheduleAssignmentPayload) {
-    const response = await httpClient.put<ScheduleAssignment>(
+    const response = await httpClient.put<ScheduleAssignmentMutationResponse>(
       `${scheduleAssignmentPath}/${id}`,
       payload,
     );
@@ -66,13 +106,17 @@ export const scheduleAssignmentApi = {
   },
 
   async generateFixed(weeklyScheduleId: number, startDate: string, endDate: string) {
-    const response = await httpClient.post<string>(`${scheduleAssignmentPath}/generate-fixed`, null, {
-      params: {
-        weeklyScheduleId,
-        startDate,
-        endDate,
+    const response = await httpClient.post<ScheduleAssignment | ScheduleAssignment[]>(
+      `${scheduleAssignmentPath}/generate-fixed`,
+      null,
+      {
+        params: {
+          weeklyScheduleId,
+          startDate,
+          endDate,
+        },
       },
-    });
+    );
     return response.data;
   },
 

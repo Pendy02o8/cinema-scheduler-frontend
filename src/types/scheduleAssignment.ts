@@ -1,33 +1,34 @@
-import type { Employee } from './employee';
-import type { Position } from './position';
-import type { WeeklySchedule } from './weeklySchedule';
-
 export type ScheduleAssignment = {
   id: number;
-  weeklySchedule?: WeeklySchedule | null;
-  employee: Employee;
-  position?: Position | null;
+  weeklyScheduleId?: number | null;
+  employeeId: number;
+  employeeName: string;
+  positionId?: number | null;
+  positionName?: string | null;
   date: string;
   startTime: string;
   endTime: string;
   note?: string | null;
-  createdAt?: string | null;
-  updatedAt?: string | null;
 };
 
 export type ScheduleAssignmentPayload = {
-  weeklySchedule?: Pick<WeeklySchedule, 'id'> | null;
-  employee: Pick<Employee, 'id'>;
-  position?: Pick<Position, 'id'> | null;
+  weeklyScheduleId: number | null;
+  employeeId: number;
+  positionId: number | null;
   date: string;
   startTime: string;
   endTime: string;
-  note?: string;
+  note?: string | null;
+};
+
+export type ScheduleAssignmentMutationResponse = {
+  data: ScheduleAssignment;
+  warnings: string[];
 };
 
 export type ScheduleAssignmentValidationResult = {
   warnings?: string[];
-  errors?: string[];
+  errors?: string[] | Record<string, string | string[]>;
   message?: string;
 };
 
@@ -35,8 +36,9 @@ export type ScheduleAssignmentChangeType = 'CREATED' | 'UPDATED' | 'DELETED';
 
 export type ScheduleAssignmentChange = {
   id: number;
-  weeklySchedule?: Pick<WeeklySchedule, 'id'> | null;
-  employee: Pick<Employee, 'id' | 'name'>;
+  weeklyScheduleId?: number | null;
+  employeeId: number;
+  employeeName: string;
   date: string;
   changeType: ScheduleAssignmentChangeType;
   createdAt?: string | null;

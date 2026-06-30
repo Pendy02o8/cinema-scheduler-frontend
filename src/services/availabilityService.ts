@@ -6,6 +6,10 @@ export const availabilityService = {
     return availabilityApi.getAll();
   },
 
+  getAvailabilityById(id: number) {
+    return availabilityApi.getById(id);
+  },
+
   getAvailabilityByEmployee(employeeId: number) {
     return availabilityApi.getByEmployee(employeeId);
   },

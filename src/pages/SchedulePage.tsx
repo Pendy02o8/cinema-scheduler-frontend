@@ -62,6 +62,7 @@ import type {
 import { getActiveEmployees } from '../utils/employeeFilters';
 import { sortEmployeesBySortOrder } from '../utils/employeeSort';
 import { getLeaveTypeLabel } from '../utils/leaveType';
+import { buildScheduleAssignmentRequest } from '../utils/scheduleAssignmentRequest';
 
 type WeeklyScheduleFormValues = {
   weekStartDate: string;
@@ -153,6 +154,42 @@ const restAssignmentEndTime = '23:59';
 const scheduleStickyColumnWidth = 96;
 const scheduleWorkHourColumnWidth = 76;
 const scheduleDateColumnMinWidth = 104;
+function getStringArrayFromValue(value: unknown): string[] {
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value).flatMap(getStringArrayFromValue);
+  }
+
+  return [];
+}
+
+function getErrorMessagesFromResponseData(data: unknown) {
+  if (typeof data === 'string') {
+    return getStringArrayFromValue(data);
+  }
+
+  if (typeof data !== 'object' || data === null) {
+    return [];
+  }
+
+  const responseData = data as Record<string, unknown>;
+  const messageValues = getStringArrayFromValue(responseData.message);
+  const errorValues = getStringArrayFromValue(responseData.errors);
+
+  if (messageValues.length > 0 || errorValues.length > 0) {
+    return [...messageValues, ...errorValues];
+  }
+
+  return getStringArrayFromValue(responseData.detail);
+}
+
 function getErrorMessage(error: unknown) {
   if (
     typeof error === 'object'
@@ -163,18 +200,10 @@ function getErrorMessage(error: unknown) {
     && 'data' in error.response
   ) {
     const responseData = error.response.data;
+    const responseErrorMessages = getErrorMessagesFromResponseData(responseData);
 
-    if (typeof responseData === 'string') {
-      return responseData;
-    }
-
-    if (
-      typeof responseData === 'object'
-      && responseData !== null
-      && 'message' in responseData
-      && typeof responseData.message === 'string'
-    ) {
-      return responseData.message;
+    if (responseErrorMessages.length > 0) {
+      return responseErrorMessages.join('\n');
     }
   }
 
@@ -194,13 +223,7 @@ function getStringArrayProperty(data: unknown, property: string) {
     return [];
   }
 
-  const value = (data as Record<string, unknown>)[property];
-
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  return getStringArrayFromValue((data as Record<string, unknown>)[property]);
 }
 
 function getAssignmentValidationWarnings(validationResult: unknown) {
@@ -273,7 +296,7 @@ function getEditableScheduleStatuses(status: string) {
 
 function buildScheduleAssignmentChangeCellSet(changes: ScheduleAssignmentChange[]) {
   return new Set(
-    changes.map((change) => getScheduleAssignmentChangeCellKey(change.employee.id, change.date)),
+    changes.map((change) => getScheduleAssignmentChangeCellKey(change.employeeId, change.date)),
   );
 }
 
@@ -327,7 +350,7 @@ function isPartTimeEmployee(employee: Employee) {
 }
 
 function getAssignmentPositionName(assignment: ScheduleAssignment) {
-  return assignment.position?.name ?? '';
+  return assignment.positionName ?? '';
 }
 
 function isRestPositionName(positionName?: string | null) {
@@ -560,7 +583,7 @@ function hasAssignmentConflict(
       return false;
     }
 
-    if (assignment.employee.id !== employeeId || assignment.date !== date) {
+    if (assignment.employeeId !== employeeId || assignment.date !== date) {
       return false;
     }
 
@@ -710,11 +733,11 @@ export default function SchedulePage() {
 
   const getAssignmentDisplayPositionName = useCallback(
     (assignment: ScheduleAssignment) => {
-      if (!assignment.position) {
+      if (!assignment.positionId) {
         return '';
       }
 
-      return positionNameById.get(assignment.position.id) ?? assignment.position.name;
+      return positionNameById.get(assignment.positionId) ?? assignment.positionName ?? '';
     },
     [positionNameById],
   );
@@ -781,7 +804,7 @@ export default function SchedulePage() {
     }
 
     return assignments.filter((assignment) => {
-      if (assignment.weeklySchedule?.id === selectedSchedule.id) {
+      if (assignment.weeklyScheduleId === selectedSchedule.id) {
         return true;
       }
 
@@ -796,7 +819,7 @@ export default function SchedulePage() {
     const grid = new Map<string, ScheduleAssignment[]>();
 
     visibleAssignments.forEach((assignment) => {
-      const key = `${assignment.employee.id}-${assignment.date}`;
+      const key = `${assignment.employeeId}-${assignment.date}`;
       const currentAssignments = grid.get(key) ?? [];
       currentAssignments.push(assignment);
       grid.set(key, currentAssignments);
@@ -825,7 +848,7 @@ export default function SchedulePage() {
     const grid = new Map<string, Availability[]>();
 
     availabilityPreview.forEach((availability) => {
-      const key = `${availability.employee.id}-${availability.date}`;
+      const key = `${availability.employeeId}-${availability.date}`;
       const currentAvailability = grid.get(key) ?? [];
       currentAvailability.push(availability);
       grid.set(key, currentAvailability);
@@ -963,7 +986,7 @@ export default function SchedulePage() {
       const availabilityData = await availabilityService.getAvailability();
       setAvailabilityPreview(
         availabilityData.filter((availability) => {
-          if (availability.weeklySchedule?.id === schedule.id) {
+          if (availability.weeklyScheduleId === schedule.id) {
             return true;
           }
 
@@ -1213,9 +1236,9 @@ export default function SchedulePage() {
     setPendingAssignmentTargetId(null);
     setPendingAssignmentAction('create');
     setAssignmentFormValues({
-      weeklyScheduleId: assignment.weeklySchedule ? String(assignment.weeklySchedule.id) : '',
-      employeeId: String(assignment.employee.id),
-      positionId: assignment.position ? String(assignment.position.id) : '',
+      weeklyScheduleId: assignment.weeklyScheduleId ? String(assignment.weeklyScheduleId) : '',
+      employeeId: String(assignment.employeeId),
+      positionId: assignment.positionId ? String(assignment.positionId) : '',
       date: assignment.date,
       startTime: formatTime(assignment.startTime),
       endTime: formatTime(assignment.endTime),
@@ -1464,15 +1487,15 @@ export default function SchedulePage() {
       return;
     }
 
-    const payload: ScheduleAssignmentPayload = {
-      weeklySchedule: weeklyScheduleId ? { id: weeklyScheduleId } : undefined,
-      employee: { id: employeeId },
-      position: payloadPositionId ? { id: payloadPositionId } : undefined,
+    const payload = buildScheduleAssignmentRequest({
+      weeklyScheduleId,
+      employeeId,
+      positionId: payloadPositionId,
       date: assignmentFormValues.date,
       startTime,
       endTime,
       note,
-    };
+    });
 
     setSaving(true);
     setError(null);
@@ -1524,7 +1547,7 @@ export default function SchedulePage() {
 
   const handleCopyAssignment = (assignment: ScheduleAssignment) => {
     setCopiedAssignment({
-      positionId: assignment.position?.id ?? null,
+      positionId: assignment.positionId ?? null,
       startTime: formatTime(assignment.startTime),
       endTime: formatTime(assignment.endTime),
       note: assignment.note ?? '',
@@ -1567,15 +1590,15 @@ export default function SchedulePage() {
       return;
     }
 
-    const payload: ScheduleAssignmentPayload = {
-      weeklySchedule: { id: selectedSchedule.id },
-      employee: { id: targetEmployeeId },
-      position: payloadPositionId ? { id: payloadPositionId } : undefined,
+    const payload = buildScheduleAssignmentRequest({
+      weeklyScheduleId: selectedSchedule.id,
+      employeeId: targetEmployeeId,
+      positionId: payloadPositionId,
       date: targetDate,
       startTime: copiedAssignment.startTime,
       endTime: copiedAssignment.endTime,
       note: copiedAssignment.note ?? '',
-    };
+    });
 
     setSaving(true);
     setError(null);
@@ -3286,7 +3309,7 @@ export default function SchedulePage() {
         <DialogTitle>刪除排班</DialogTitle>
         <DialogContent>
           <Typography>
-            確定要刪除 {deleteAssignmentTarget?.employee.name} 在 {deleteAssignmentTarget?.date} 的班段嗎？
+            確定要刪除 {deleteAssignmentTarget?.employeeName} 在 {deleteAssignmentTarget?.date} 的班段嗎？
           </Typography>
         </DialogContent>
         <DialogActions>

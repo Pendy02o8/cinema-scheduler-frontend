@@ -247,12 +247,12 @@ export default function EmployeePage() {
       name: formValues.name.trim(),
       jobTitle: formValues.jobTitle.trim(),
       isActive: formValues.isActive,
-      note: formValues.note.trim(),
-      sortOrder: editingEmployee?.sortOrder ?? undefined,
+      note: formValues.note.trim() || null,
+      employeeType: formValues.employeeType || null,
+      fixedShiftType: formValues.fixedShiftType || 'NONE',
+      sortOrder: editingEmployee?.sortOrder ?? 9999,
       requiresPositionAssignment: formValues.requiresPositionAssignment,
       requiresMonthlyLeave: formValues.requiresMonthlyLeave,
-      employeeType: formValues.employeeType || null,
-      fixedShiftType: formValues.fixedShiftType || null,
     };
 
     if (!payload.name || !payload.jobTitle) {

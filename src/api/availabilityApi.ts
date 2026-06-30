@@ -9,6 +9,11 @@ export const availabilityApi = {
     return response.data;
   },
 
+  async getById(id: number) {
+    const response = await httpClient.get<Availability>(`${availabilityPath}/${id}`);
+    return response.data;
+  },
+
   async getByEmployee(employeeId: number) {
     const response = await httpClient.get<Availability[]>(`${availabilityPath}/employee/${employeeId}`);
     return response.data;

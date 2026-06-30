@@ -46,6 +46,7 @@ import { getActiveEmployees } from '../utils/employeeFilters';
 
 type AvailabilityFormValues = {
   employeeId: string;
+  weeklyScheduleId: string;
   date: string;
   availabilityType: AvailabilityType;
   boundaryTime: string;
@@ -60,6 +61,7 @@ type SnackbarState = {
 
 const emptyFormValues: AvailabilityFormValues = {
   employeeId: '',
+  weeklyScheduleId: '',
   date: '',
   availabilityType: 'BEFORE',
   boundaryTime: '',
@@ -171,7 +173,7 @@ export default function AvailabilityPage() {
 
       setAvailability(
         selectedEmployeeIsActive
-          ? availabilityData.filter((item) => activeEmployeeIds.has(item.employee.id))
+          ? availabilityData.filter((item) => activeEmployeeIds.has(item.employeeId))
           : [],
       );
       setEmployees(activeEmployees);
@@ -212,6 +214,7 @@ export default function AvailabilityPage() {
     setFormValues({
       ...emptyFormValues,
       employeeId: selectedEmployeeId,
+      weeklyScheduleId: importWeeklyScheduleId,
     });
     setFormOpen(true);
   };
@@ -219,7 +222,8 @@ export default function AvailabilityPage() {
   const handleOpenEdit = (item: Availability) => {
     setEditingAvailability(item);
     setFormValues({
-      employeeId: String(item.employee.id),
+      employeeId: String(item.employeeId),
+      weeklyScheduleId: item.weeklyScheduleId ? String(item.weeklyScheduleId) : '',
       date: item.date,
       availabilityType: item.availabilityType as AvailabilityType,
       boundaryTime: formatTime(item.boundaryTime),
@@ -261,14 +265,12 @@ export default function AvailabilityPage() {
     }
 
     const payload: AvailabilityPayload = {
-      employee: { id: employeeId },
-      weeklySchedule: editingAvailability?.weeklySchedule
-        ? { id: editingAvailability.weeklySchedule.id }
-        : undefined,
+      employeeId,
+      weeklyScheduleId: Number(formValues.weeklyScheduleId) || null,
       date: formValues.date,
       availabilityType: formValues.availabilityType,
       boundaryTime: boundaryTime || null,
-      note: formValues.note.trim(),
+      note: formValues.note.trim() || null,
     };
 
     setSaving(true);
@@ -522,7 +524,7 @@ export default function AvailabilityPage() {
               <TableRow key={item.id} hover>
                 <TableCell>{item.id}</TableCell>
                 <TableCell>
-                  {employeeNameById.get(item.employee.id) ?? item.employee.name}
+                  {employeeNameById.get(item.employeeId) ?? item.employeeName}
                 </TableCell>
                 <TableCell>{item.date}</TableCell>
                 <TableCell>
@@ -600,6 +602,28 @@ export default function AvailabilityPage() {
                 </Select>
               </FormControl>
 
+              <FormControl fullWidth>
+                <InputLabel id="availability-week-select-label">週排班</InputLabel>
+                <Select
+                  labelId="availability-week-select-label"
+                  label="週排班"
+                  value={formValues.weeklyScheduleId}
+                  onChange={(event) =>
+                    setFormValues((current) => ({
+                      ...current,
+                      weeklyScheduleId: event.target.value,
+                    }))
+                  }
+                >
+                  <MenuItem value="">不指定週排班</MenuItem>
+                  {weeklySchedules.map((schedule) => (
+                    <MenuItem key={schedule.id} value={String(schedule.id)}>
+                      {formatDisplayDate(schedule.weekStartDate)} ~{' '}
+                      {formatDisplayDate(schedule.weekEndDate)}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
               <TextField
                 label="日期"
                 type="date"
@@ -667,7 +691,7 @@ export default function AvailabilityPage() {
         <DialogTitle>刪除休假資料</DialogTitle>
         <DialogContent>
           <Typography>
-            確定要刪除 {deleteTarget?.employee.name} 在 {deleteTarget?.date} 的休假資料嗎？
+            確定要刪除 {deleteTarget?.employeeName} 在 {deleteTarget?.date} 的休假資料嗎？
           </Typography>
         </DialogContent>
         <DialogActions>

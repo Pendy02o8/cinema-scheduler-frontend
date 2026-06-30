@@ -582,30 +582,46 @@ export default function MonthlyLeavePage() {
                           }}
                         >
                           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                            {morningLeaves.map((leave) => (
-                              <Typography
-                                key={leave.id}
-                                variant="body1"
-                                color="primary.main"
-                                noWrap
-                                sx={{ minWidth: 0, lineHeight: 1.25 }}
-                              >
-                                {leave.employee.name}・{getLeaveTypeLabel(leave.leaveType, 'management')}
-                              </Typography>
-                            ))}
+                            {morningLeaves.map((leave) => {
+                              const annualLeave =
+                                normalizeLeaveType(leave.leaveType) === 'ANNUAL_LEAVE';
+
+                              return (
+                                <Typography
+                                  key={leave.id}
+                                  variant="body1"
+                                  noWrap
+                                  style={{
+                                    color: annualLeave ? '#d32f2f' : undefined,
+                                    fontWeight: annualLeave ? 700 : undefined,
+                                  }}
+                                  sx={{ minWidth: 0, lineHeight: 1.25 }}
+                                >
+                                  {leave.employee.name}
+                                </Typography>
+                              );
+                            })}
                           </Stack>
                           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                            {eveningLeaves.map((leave) => (
-                              <Typography
-                                key={leave.id}
-                                variant="body1"
-                                color="primary.main"
-                                noWrap
-                                sx={{ minWidth: 0, lineHeight: 1.25 }}
-                              >
-                                {leave.employee.name}・{getLeaveTypeLabel(leave.leaveType, 'management')}
-                              </Typography>
-                            ))}
+                            {eveningLeaves.map((leave) => {
+                              const annualLeave =
+                                normalizeLeaveType(leave.leaveType) === 'ANNUAL_LEAVE';
+
+                              return (
+                                <Typography
+                                  key={leave.id}
+                                  variant="body1"
+                                  noWrap
+                                  style={{
+                                    color: annualLeave ? '#d32f2f' : undefined,
+                                    fontWeight: annualLeave ? 700 : undefined,
+                                  }}
+                                  sx={{ minWidth: 0, lineHeight: 1.25 }}
+                                >
+                                  {leave.employee.name}
+                                </Typography>
+                              );
+                            })}
                           </Stack>
                         </Box>
                       ) : null}
